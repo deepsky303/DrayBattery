@@ -73,8 +73,8 @@ on your taskbar or in your notification area.
 
 | Package | Recommended for |
 |:---|:---|
-| **[Setup for Windows](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.8-setup.exe`) | Per-user installation with Start Menu shortcut, optional desktop shortcut and an uninstaller |
-| **[Portable ZIP](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.8-portable.zip`) | Extract anywhere and run `DrayBattery.exe` |
+| **[Setup for Windows](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.9-setup.exe`) | Per-user installation with Start Menu shortcut, optional desktop shortcut and an uninstaller |
+| **[Portable ZIP](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.9-portable.zip`) | Extract anywhere and run `DrayBattery.exe` |
 | [Source code](https://github.com/deepsky303/DrayBattery) | Build it yourself or inspect the implementation |
 
 The installer uses the current user account and doesn't require administrator privileges. **Autostart is disabled by default** and can be enabled from the application's context menu. Neither package installs device drivers.
@@ -99,6 +99,12 @@ The installer uses the current user account and doesn't require administrator pr
 Additional drivers are inherited from the upstream project; they are **not all hardware-verified** in this derivative. Read the [device compatibility and identification guide](docs/device-support.md) before submitting a request for another model.
 
 **Important:** USB VID/PID databases identify device types; they do not magically provide battery protocols or distinguish two physical units of the same model.
+
+## Optional USB device identification database
+
+**On demand**, DrayBattery can fetch the public hwdata/usb.ids catalogue with vendor and product names, store it locally and identify attached USB/HID devices. **It does not automatically provide a battery protocol.** No update request is sent during normal polling, and device identifiers are not uploaded.
+
+Use **Update USB device names (online)…** from the context menu, or the commands below. Cached names work without internet. See the [expanded device compatibility table](docs/device-support.md) for families with actual battery drivers.
 
 ## How battery levels are displayed
 
@@ -157,6 +163,9 @@ The value comes from the device's own battery field or another available interfa
 ```cmd
 DrayBattery.exe --list
 DrayBattery.exe --dump
+DrayBattery.exe --identify
+DrayBattery.exe --db-info
+DrayBattery.exe --update-device-db
 DrayBattery.exe --quit
 ```
 

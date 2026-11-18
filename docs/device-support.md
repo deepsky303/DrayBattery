@@ -1,38 +1,79 @@
-# Device support and identification
+# Device support, battery protocols and USB catalogue
 
-[**Русская версия**](device-support.ru.md)
+[Русская версия](device-support.ru.md)
 
-DrayBattery reads battery status from supported device protocols and standard Windows interfaces. Having a VID:PID entry in a database **does not** mean the device publishes a readable battery percentage.
+## Three levels of support
+
+| Status | Meaning | Battery reading? |
+| --- | --- | --- |
+| **Verified on DrayBattery hardware** | We successfully read a real battery report | Yes, in the tested configuration |
+| **Protocol implemented** | The source includes a compatible device driver or Windows fallback | Only if the device responds correctly |
+| **Identified by the USB database** | A public VID:PID record names the hardware | **No. Identification is not battery monitoring.** |
 
 ## Verified on physical hardware
 
 | Device | Connection / source | Status | Notes |
 | --- | --- | --- | --- |
-| Logitech G903 LIGHTSPEED | G HUB local interface | Verified | Percentage obtained from the local running G HUB |
-| Logitech G915 X LIGHTSPEED | G HUB local interface | Verified | Charging and sleep caching; hardware signature allows merging USB and LIGHTSPEED transport |
-| Razer Wolverine V3 Pro | Windows Mode, USB VID:PID `1532:0A4C` | Verified raw report | HID report `0x04`, battery query `0x07/0x80`; reported 0–255 value converted to percentage |
-| Razer Wolverine V3 Pro | Xbox Mode, USB VID:PID `1532:0A3F` | Verified GIP response | Foreground reader required; previous value may be cached and dimmed |
+| Logitech G903 LIGHTSPEED | Local G HUB | Verified | Battery percentage |
+| Logitech G915 X LIGHTSPEED | Local G HUB | Verified | Charging, sleeping and physical identity |
+| Razer Wolverine V3 Pro | Windows Mode, 1532:0A4C | Verified | HID battery field, normalized from 0–255 |
+| Razer Wolverine V3 Pro | Xbox Mode, 1532:0A3F | Verified | Foreground GIP request and last-known cache |
 
-These are confirmations of **successful protocol reads**, not independent measurements of battery capacity.
+These are validated protocol reads, not independent measurements of battery capacity.
 
-## Additional drivers
+## Other protocols present in the code
 
-Device-specific drivers inherited from [Wireless Device Battery Monitor](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor) cover selected models from ATK, Aula, Cooler Master, Corsair, GameSir, Glorious, HyperX, Keychron, Kysona, Lamzu, Logitech, Razer, Rapoo, ROG, Sony INZONE, SteelSeries, Zowie and other manufacturers. The coverage depends on the **specific model and firmware**, not just its brand.
+The following are **implemented driver families, not independently tested guarantees for every model**. They depend on exact IDs, interfaces, firmware versions and response formats.
 
-Standard HID battery reports, Bluetooth battery characteristics and Windows gaming input are used as fallback sources where available. Windows XInput often reports only an imprecise range such as Low, Medium or Full.
+| Device families and examples | Mechanism |
+| --- | --- |
+| Logitech mice/keyboards/G headsets | HID++ 1.0/2.0; local G HUB |
+| Razer mice/keyboards, BlackShark V3 | Vendor HID |
+| SteelSeries Arctis / Nova / Aerox / Rival | Vendor HID |
+| Corsair Void / HS70 / HS80 / Virtuoso | Vendor HID |
+| HyperX Cloud II / III / Alpha / Flight | Vendor HID |
+| Glorious and selected Hitscan mice | Vendor HID |
+| Cooler Master MM712 / MM731 | Vendor HID |
+| Rapoo VT mice | HID receiver reports ([protocol notes](rapoo.md)) |
+| ASUS ROG mice and keyboards | Vendor HID |
+| BenQ ZOWIE EC-CW / DW | Vendor HID |
+| LAMZU / Keychron / Kysona / ATK / VXE / Pulsar | Model-specific protocols |
+| AULA wireless keyboards | Vendor HID |
+| GameSir Nova family | Vendor HID |
+| Sony DualShock 4 / DualSense | Controller reports |
+| Xbox controllers | Windows.Gaming.Input; coarse XInput fallback |
+| **CHERRY MX 3.0S Wireless** (046A:00E3 / 00EA) | Vendor status report; imported from upstream v1.0.8, not yet hardware-tested in DrayBattery |
+| **Valve Steam Controller** (vendor 28DE) | Passive HID battery report; imported from upstream v1.0.8, not yet hardware-tested in DrayBattery |
+| Generic HID devices | Standard Battery Strength report |
+| Bluetooth peripherals | Windows Bluetooth battery property |
+| Additional headsets | Optional external HeadsetControl installation |
 
-## Recognition and deduplication
+The [upstream project](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor) has additional implementations for AirPods, Galaxy Buds, 8BitDo, Audeze, Astro and more. They do **not** become available in DrayBattery automatically: source integration, validation and testing are required.
 
-USB vendor and product IDs identify a **type** of device, not necessarily a unique physical unit. A serial number or verified physical signature is required to safely merge a USB and wireless representation. DrayBattery leaves unresolved devices separate rather than incorrectly hiding a second device of the same model.
+## Optional, on-demand USB device identification database
 
-The Wolverine V3 Pro transport modes use a single-controller identity mapping in the currently supported configuration. Two simultaneously connected Wolverine V3 Pro units have **not** been validated for unique identification.
+DrayBattery can download the public [hwdata usb.ids](https://github.com/vcrhonek/hwdata/blob/master/usb.ids) catalogue **on request only**. Windows/HID product names remain available without it. Once cached, ID lookup works offline.
 
-## Suggest a new device
+From the application directory:
 
-1. Run `DrayBattery.exe --dump` and `DrayBattery.exe --list`.
-2. Identify the exact model, firmware, operating mode, and transport (USB, 2.4 GHz, Bluetooth).
-3. Search for an existing [issue](https://github.com/deepsky303/DrayBattery/issues), or open a new one with sanitized diagnostic output.
+    DrayBattery.exe --db-info
+    DrayBattery.exe --identify
+    DrayBattery.exe --update-device-db
 
-**Privacy:** `--dump` can contain device product names and interface information. Review and redact unique identifiers, serial numbers and private details before uploading any logs.
+- **--db-info:** show cached vendor and product counts.
+- **--identify:** identify the local USB/HID devices by VID:PID. It does **not** read their batteries.
+- **--update-device-db:** fetch the full catalogue over HTTPS, validate it and atomically replace the cached copy. Failed updates leave the previous file intact.
 
-An optional offline identification catalogue may be added in the future, but no online database can replace device-specific battery protocol support.
+You can also select **Update USB device names (online)…** from the context menu. The database lives at %LOCALAPPDATA%\DrayBattery\usb.ids. **Normal app startup and battery polling never contact this service. No hardware identifiers, serial numbers or device lists are sent in the update request.**
+
+The dataset's [license](https://github.com/vcrhonek/hwdata/blob/master/LICENSE) offers GPL-2.0-or-later or XFree86 1.0; its GPL option is compatible with DrayBattery's GPL-3.0-or-later.
+
+**Why no automatic downloaded battery drivers?** Unreviewed HID commands can disrupt input devices. The online database only supplies names; new battery protocol code is distributed in tested app releases.
+
+## Identity, duplicates and requests
+
+VID:PID identifies a device **model/type**, not a specific physical unit. DrayBattery only merges different transports with verified identity or receiver/slot evidence. Two real same-model units must remain separate.
+
+For Wolverine V3 Pro, cross-mode mapping was verified with one physical controller; multiple simultaneous units remain unverified.
+
+To request battery support, run the offline **--identify** and **--list** commands, specify the exact model, firmware and transport, and open an [issue](https://github.com/deepsky303/DrayBattery/issues). Review diagnostics before sharing: remove serials, private paths and unique hardware signatures. A model name alone is not sufficient evidence for implementing a battery protocol.

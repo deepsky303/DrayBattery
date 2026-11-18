@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "devices.h"
+#include "device_db.h"
 #include "logical_identity.h"
 #include "widget.h"
 #include "palette.h"
@@ -34,7 +35,7 @@ constexpr UINT_PTR TIMER_WIDGET = 2;
 constexpr int LOW_BATTERY = 15;
 constexpr UINT PLACEHOLDER_ID = 1;
 
-enum MenuId : UINT { ID_REFRESH = 100, ID_AUTOSTART, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY, ID_REFRESH_XBOX, ID_STYLE_COLORED, ID_STYLE_WHITE, ID_STYLE_MONOCHROME, ID_DEVICE_FIRST = 1000 };
+enum MenuId : UINT { ID_REFRESH = 100, ID_AUTOSTART, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY, ID_REFRESH_XBOX, ID_STYLE_COLORED, ID_STYLE_WHITE, ID_STYLE_MONOCHROME, ID_DEVICE_DB_UPDATE, ID_DEVICE_FIRST = 1000 };
 
 const wchar_t* kAppName = L"Dray Battery";
 const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -495,6 +496,21 @@ void SetAppearanceChoice(palette::IconStyle style) {
     if (g_useWidget) widget::SetLightTheme(g_lightTaskbar);
 }
 
+void LaunchDeviceNamesUpdater() {
+    // Only an explicit user menu action can contact the public database.
+    // The detached updater shows the result in a small message box.
+    wchar_t path[MAX_PATH]{};
+    if (!GetModuleFileNameW(nullptr,path,MAX_PATH)) return;
+    std::wstring command = L"\"" + std::wstring(path) + L"\" --update-device-db --notify";
+    STARTUPINFOW startup{sizeof(startup)};
+    PROCESS_INFORMATION child{};
+    if (CreateProcessW(path, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                       nullptr, nullptr, &startup, &child)) {
+        CloseHandle(child.hThread);
+        CloseHandle(child.hProcess);
+    }
+}
+
 void LaunchXboxBatteryReader() {
     wchar_t path[MAX_PATH]{};
     if (!GetModuleFileNameW(nullptr,path,MAX_PATH)) return;
@@ -531,6 +547,8 @@ void ShowMenu() {
     AppendMenuW(m, MF_POPUP, (UINT_PTR)appearance, L"Icon appearance");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_REFRESH, L"Refresh now");
+    AppendMenuW(m, MF_STRING, ID_DEVICE_DB_UPDATE,
+                L"Update USB device names (online)...");
     if (IsWolverineXboxPresent())
         AppendMenuW(m, MF_STRING, ID_REFRESH_XBOX,
             L"Read Wolverine battery (Xbox mode)...");
@@ -546,6 +564,7 @@ void ShowMenu() {
     switch (cmd) {
         case ID_REFRESH: SetEvent(g_refreshEvt); break;
         case ID_REFRESH_XBOX: LaunchXboxBatteryReader(); break;
+        case ID_DEVICE_DB_UPDATE: LaunchDeviceNamesUpdater(); break;
         case ID_STYLE_COLORED: SetAppearanceChoice(palette::IconStyle::Colored); break;
         case ID_STYLE_WHITE: SetAppearanceChoice(palette::IconStyle::White); break;
         case ID_STYLE_MONOCHROME: SetAppearanceChoice(palette::IconStyle::Monochrome); break;
@@ -734,7 +753,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 // `DrayBattery.exe --list` prints what it finds, `--dump` every HID collection.
-int ListToConsole(bool dump) {
+int ListToConsole(bool dump, bool identify = false, bool info = false, bool update = false) {
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     if (!out || out == INVALID_HANDLE_VALUE) {
         if (AttachConsole(ATTACH_PARENT_PROCESS)) out = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -746,6 +765,14 @@ int ListToConsole(bool dump) {
         DWORD w;
         WriteFile(out, u.data(), (DWORD)u.size(), &w, nullptr);
     };
+    if (update) {
+        std::wstring message;
+        bool ok = draybattery::device_db::UpdateNames(message);
+        write(message + L"\n");
+        return ok ? 0 : 1;
+    }
+    if (info) { write(draybattery::device_db::CacheInfo()); return 0; }
+    if (identify) { write(draybattery::device_db::IdentifyConnectedHid()); return 0; }
     if (dump) {
         write(DumpHidCollections());
         return 0;
@@ -778,6 +805,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
                 PostMessageW(parent, WM_APP + 4, 0, 0);
         return result;
     }
+    if (cmdLine && wcsstr(cmdLine, L"--update-device-db")) {
+        if (wcsstr(cmdLine, L"--notify")) {
+            std::wstring message;
+            bool ok=draybattery::device_db::UpdateNames(message);
+            MessageBoxW(nullptr, message.c_str(), L"DrayBattery - USB device names",
+                        MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+            return ok ? 0 : 1;
+        }
+        return ListToConsole(false,false,false,true);
+    }
+    if (cmdLine && wcsstr(cmdLine, L"--db-info")) return ListToConsole(false,false,true);
+    if (cmdLine && wcsstr(cmdLine, L"--identify")) return ListToConsole(false,true);
     if (cmdLine && wcsstr(cmdLine, L"--list")) return ListToConsole(false);
     if (cmdLine && wcsstr(cmdLine, L"--dump")) return ListToConsole(true);
     if (cmdLine && wcsstr(cmdLine, L"--quit")) {  // used by the installer before upgrading/uninstalling

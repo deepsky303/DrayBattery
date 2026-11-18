@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.9
+
+- Added an explicitly opt-in USB manufacturer and device-name catalogue updater using the public hwdata usb.ids source over HTTPS. Local cache persists offline; invalid updates preserve existing data.
+- Added read-only commands --identify, --db-info and --update-device-db plus a context-menu updater. No hardware inventory or serial is sent to the database server.
+- Imported reviewed, model-specific battery protocols for CHERRY MX 3.0S Wireless and Valve Steam Controller from upstream Wireless-Device-Battery-Monitor v1.0.8 (not hardware-tested in this derivative).
+- Expanded the English and Russian compatibility guides to distinguish physically verified devices, implemented protocols and mere USB identification.
+- Added usb.ids parser tests and retained the read-only existing battery polling pipeline.
+
 ## 0.1.8
 
 - Fixed temporary duplicate icons after Logitech changes battery-reporting source between direct HID++ and G HUB. The superseded last-known entry disappears as soon as a verified live reading for the same receiver/slot is available, instead of lingering for up to 30 minutes.

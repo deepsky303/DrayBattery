@@ -35,4 +35,8 @@ cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /I "src" /Fe"build\logical_identity_t
 if not "%ERRORLEVEL%"=="0" exit /b 11
 "build\logical_identity_test.exe"
 if not "%ERRORLEVEL%"=="0" exit /b 12
+cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /I "src" /Fe"build\device_db_parser_test.exe" tests\device_db_parser_test.cpp
+if not "%ERRORLEVEL%"=="0" exit /b 13
+"build\device_db_parser_test.exe"
+if not "%ERRORLEVEL%"=="0" exit /b 14
 echo ALL_TESTS_PASSED
