@@ -73,8 +73,8 @@ on your taskbar or in your notification area.
 
 | Package | Recommended for |
 |:---|:---|
-| **[Setup for Windows](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.7-setup.exe`) | Per-user installation with Start Menu shortcut, optional desktop shortcut and an uninstaller |
-| **[Portable ZIP](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.7-portable.zip`) | Extract anywhere and run `DrayBattery.exe` |
+| **[Setup for Windows](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.8-setup.exe`) | Per-user installation with Start Menu shortcut, optional desktop shortcut and an uninstaller |
+| **[Portable ZIP](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.8-portable.zip`) | Extract anywhere and run `DrayBattery.exe` |
 | [Source code](https://github.com/deepsky303/DrayBattery) | Build it yourself or inspect the implementation |
 
 The installer uses the current user account and doesn't require administrator privileges. **Autostart is disabled by default** and can be enabled from the application's context menu. Neither package installs device drivers.

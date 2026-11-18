@@ -44,6 +44,46 @@ inline int SourcePriority(const DeviceStatus& s) {
     return score;
 }
 
+// When a Logitech receiver is temporarily read through HID++ and then G HUB,
+// the earlier entry may remain in the taskbar's last-known-value grace period
+// even after G HUB creates a new logical key for the same physical mouse.
+// Suppress only a proven duplicate: either the same verified physical identity
+// or a shared receiver + slot alias, the same normalized model/kind, and at
+// least one authenticated physical identity. Never match on a model name alone.
+inline bool SupersededPreviousEntry(const DeviceStatus& previous,
+                                     const std::vector<DeviceStatus>& current) {
+    for (const auto& fresh : current) {
+        if (fresh.key == previous.key || !fresh.connected || fresh.asleep ||
+            fresh.kind != previous.kind)
+            continue;
+
+        if (!previous.physicalId.empty() && !fresh.physicalId.empty()) {
+            if (previous.physicalId == fresh.physicalId) return true;
+            // Two different physical signatures must never be merged.
+            continue;
+        }
+        if (previous.physicalId.empty() && fresh.physicalId.empty()) continue;
+        if (CanonicalModelName(previous.name) != CanonicalModelName(fresh.name))
+            continue;
+
+        auto aliases = [](const DeviceStatus& s) {
+            std::vector<std::wstring> a = s.sourceKeys;
+            if (a.empty()) a.push_back(s.key);
+            return a;
+        };
+        auto oldAliases = aliases(previous);
+        auto freshAliases = aliases(fresh);
+        for (const auto& oldAlias : oldAliases) {
+            // Receiver PID and device index identify this Logitech link.
+            if (oldAlias.rfind(L"logi:", 0) != 0) continue;
+            if (std::find(freshAliases.begin(), freshAliases.end(), oldAlias)
+                != freshAliases.end())
+                return true;
+        }
+    }
+    return false;
+}
+
 // Carefully migrate old cached Logitech records made before a physical
 // identity was persisted. A stale receiver entry may be coalesced with one
 // live device of the same normalized model only when unique in this snapshot.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.8
+
+- Fixed temporary duplicate icons after Logitech changes battery-reporting source between direct HID++ and G HUB. The superseded last-known entry disappears as soon as a verified live reading for the same receiver/slot is available, instead of lingering for up to 30 minutes.
+- Kept distinct same-model devices separate when their physical identities or receiver aliases differ.
+- Added regression tests for source transitions, unrelated receivers, disconnected sources and sleeping entries.
+- Hardened the Windows test runner so abnormal negative process exit codes cannot incorrectly report all tests passing.
+
 ## 0.1.7
 
 - Three persistent icon appearance modes: adaptive colors, classic white and adaptive monochrome.

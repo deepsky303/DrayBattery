@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "devices.h"
+#include "logical_identity.h"
 #include "widget.h"
 #include "palette.h"
 #include "poll_schedule.h"
@@ -414,7 +415,13 @@ void OnResults(std::vector<DeviceStatus>& results) {
     for (auto it = g_entries.begin(); it != g_entries.end();) {
         auto& e = it->second;
         // Some receivers drop sleeping devices from the link; keep showing the last value for a while.
-        bool inGrace = !seen.count(it->first) && e.st.graceSec > 0 && e.st.connected &&
+        // A previous Logitech receiver entry can outlive its source for 30 minutes.
+        // If another verified identity now reports the same physical receiver/slot,
+        // don't keep showing the superseded (dimmed) percentage beside the live one.
+        bool superseded = !seen.count(it->first) &&
+                           draybattery::SupersededPreviousEntry(e.st, results);
+        bool inGrace = !superseded && !seen.count(it->first) &&
+                       e.st.graceSec > 0 && e.st.connected &&
                        GetTickCount64() - e.lastSeen < (ULONGLONG)e.st.graceSec * 1000;
         if (inGrace) {
             e.st.percent = -1;

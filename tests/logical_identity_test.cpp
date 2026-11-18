@@ -58,5 +58,42 @@ int main(){
     auto mergedGame=draybattery::MergeLogicalDevices({gameXbox,gamePc});
     assert(mergedGame.size()==1 && mergedGame[0].percent==97);
     assert(mergedGame[0].key==L"physical:razer:wolverine-v3pro:primary");
+    // Cross-poll source transition: 42% from HID++ must not linger next
+    // to the active 41% G HUB reading of the same G903 physical device.
+    auto oldHid = Make(L"logi:C539:1",L"Logitech G903 LIGHTSPEED",
+        nullptr,DeviceKind::Mouse,42,false);
+    oldHid.via=L"Logitech receiver";
+    oldHid.graceSec=1800;
+    oldHid.sourceKeys={L"logi:C539:1"};
+    auto newHub=Make(L"physical:logitech:MOUSE.g903_hero.0.1680857627",
+        L"Logitech G903 LIGHTSPEED",
+        L"logitech:MOUSE.g903_hero.0.1680857627",DeviceKind::Mouse,41);
+    newHub.sourceKeys={L"logi:C539:1"};
+    assert(draybattery::SupersededPreviousEntry(oldHid, {newHub}));
+    auto asleepHid=oldHid;
+    asleepHid.asleep=true;
+    assert(!draybattery::SupersededPreviousEntry(newHub, {asleepHid}));
+    // No shared hardware alias: identical model alone must never hide a mouse.
+    auto otherReceiver=oldHid;
+    otherReceiver.key=L"logi:C540:1";
+    otherReceiver.sourceKeys={L"logi:C540:1"};
+    assert(!draybattery::SupersededPreviousEntry(otherReceiver, {newHub}));
+    // Even a shared receiver alias cannot override distinct verified units.
+    auto anotherUnit=oldHid;
+    anotherUnit.physicalId=L"logitech:MOUSE.g903_hero.0.other_unit";
+    assert(!draybattery::SupersededPreviousEntry(anotherUnit, {newHub}));
+    // Transport fallback also removes a ghost with physical ID when a live
+    // anonymous HID++ reading has the same receiver slot and device model.
+    auto newHid=oldHid;
+    newHid.percent=39;
+    auto oldHub=newHub;
+    assert(draybattery::SupersededPreviousEntry(oldHub, {newHid}));
+    // Stale or disconnected replacement is not a valid reason to discard cache.
+    newHub.asleep=true;
+    assert(!draybattery::SupersededPreviousEntry(oldHid, {newHub}));
+    newHub.asleep=false;
+    newHub.connected=false;
+    assert(!draybattery::SupersededPreviousEntry(oldHid, {newHub}));
+
     std::cout<<"PASS: physical identity, two USB transports, legacy cache, unique units.\n";
 }
