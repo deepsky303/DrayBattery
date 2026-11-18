@@ -73,8 +73,8 @@ on your taskbar or in your notification area.
 
 | Package | Recommended for |
 |:---|:---|
-| **[Setup for Windows](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.9-setup.exe`) | Per-user installation with Start Menu shortcut, optional desktop shortcut and an uninstaller |
-| **[Portable ZIP](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.9-portable.zip`) | Extract anywhere and run `DrayBattery.exe` |
+| **[Setup for Windows](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.10-setup.exe`) | Per-user installation with Start Menu shortcut, optional desktop shortcut and an uninstaller |
+| **[Portable ZIP](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.10-portable.zip`) | Extract anywhere and run `DrayBattery.exe` |
 | [Source code](https://github.com/deepsky303/DrayBattery) | Build it yourself or inspect the implementation |
 
 The installer uses the current user account and doesn't require administrator privileges. **Autostart is disabled by default** and can be enabled from the application's context menu. Neither package installs device drivers.
@@ -170,6 +170,8 @@ DrayBattery.exe --quit
 ```
 
 `--list` prints recognized battery devices, `--dump` lists detected HID collections, and `--quit` closes a running instance. **Check and redact unique identifiers before publicly sharing logs.**
+
+If the app vanishes after login, check `%LOCALAPPDATA%\DrayBattery\lifecycle.log`: it records local startup and normal-exit events (timestamp and process ID only), helping distinguish a regular exit from an abnormal termination. No device identifiers or network uploads.
 
 ## Build and contribute
 

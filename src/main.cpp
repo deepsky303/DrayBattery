@@ -15,6 +15,7 @@
 #include "devices.h"
 #include "device_db.h"
 #include "logical_identity.h"
+#include "lifecycle.h"
 #include "widget.h"
 #include "palette.h"
 #include "poll_schedule.h"
@@ -405,6 +406,9 @@ void UpdateWidget() {
 void OnResults(std::vector<DeviceStatus>& results) {
     std::map<std::wstring, bool> seen;
     for (auto& s : results) {
+        // Explicit NOT_CONNECTED records are control-plane invalidations,
+        // not visible battery devices. Retire their old live/stale icons below.
+        if (!s.connected) continue;
         auto& e = g_entries[s.key];
         if (!e.uid) e.uid = StableId(s.key);
         e.st = s;
@@ -421,7 +425,9 @@ void OnResults(std::vector<DeviceStatus>& results) {
         // don't keep showing the superseded (dimmed) percentage beside the live one.
         bool superseded = !seen.count(it->first) &&
                            draybattery::SupersededPreviousEntry(e.st, results);
-        bool inGrace = !superseded && !seen.count(it->first) &&
+        bool disconnected = !seen.count(it->first) &&
+                            draybattery::InvalidatedByExplicitDisconnect(e.st, results);
+        bool inGrace = !superseded && !disconnected && !seen.count(it->first) &&
                        e.st.graceSec > 0 && e.st.connected &&
                        GetTickCount64() - e.lastSeen < (ULONGLONG)e.st.graceSec * 1000;
         if (inGrace) {
@@ -737,6 +743,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_DESTROY:
+            LogDrayLifecycle(L"EXIT(normal)");
             KillTimer(h, TIMER_WIDGET);
             widget::Destroy();
             SetEvent(g_stopEvt);
@@ -830,6 +837,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
 
     HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\DrayBatteryTray");
     if (GetLastError() == ERROR_ALREADY_EXISTS) return 0;
+    LogDrayLifecycle(L"START");
 
     g_lightTaskbar = ReadLightTaskbar();
     palette::SetFallbackLight(g_lightTaskbar);
@@ -843,7 +851,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     RegisterClassExW(&wc);
     // A hidden top-level window (not message-only) so it receives the TaskbarCreated broadcast.
     g_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, kAppName, WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, inst, nullptr);
-    if (!g_hwnd) return 1;
+    if (!g_hwnd) { LogDrayLifecycle(L"START_FAILED(window)"); return 1; }
 
     DEV_BROADCAST_DEVICEINTERFACE_W filter{ sizeof(filter) };
     filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;

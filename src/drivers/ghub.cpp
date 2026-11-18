@@ -4,6 +4,7 @@
 // shared receiver input-report contention with lghub_agent.exe.
 #include "drivers.h"
 #include "ghub_json.h"
+#include "ghub_status.h"
 #include "logitech_cache.h"
 #include <winhttp.h>
 #include <algorithm>
@@ -171,6 +172,10 @@ void PollGHub(PollContext& ctx) {
     if (!devices || devices->type != ghubjson::Value::Array) return;
 
     std::map<USHORT, unsigned> indexByReceiver;
+    // An explicit NOT_CONNECTED state supersedes last-known percentages.
+    // Defer it until all ACTIVE/SLEEPING siblings have been handled; one
+    // receiver PID can enumerate multiple G HUB logical entries.
+    std::map<USHORT, DeviceStatus> offlineByReceiver;
     for (const ghubjson::Value& device : devices->array) {
         const auto* state = device.get("state");
         const auto* connection = device.get("connectionType");
@@ -178,9 +183,8 @@ void PollGHub(PollContext& ctx) {
         const auto* identifier = device.get("id");
         if (!state) continue;
         const std::string stateName = state->str();
-        const bool active = stateName == "ACTIVE" || stateName == "CONNECTED";
-        const bool asleep = stateName == "NOT_CONNECTED" || stateName == "SLEEPING";
-        if (!active && !asleep) continue; // Unknown state: HID++ fallback.
+        const auto currentState = draybattery::ghub::ParseDeviceState(stateName);
+        if (!currentState.known) continue; // Unknown state: HID++ fallback.
         if (connection && connection->str() == "WIRED") continue;
         if (!path || !identifier || !SafeId(identifier->str())) continue;
 
@@ -195,6 +199,31 @@ void PollGHub(PollContext& ctx) {
                 c.page() == 0xFF00) { receiverPresent = true; break; }
         }
         if (!receiverPresent) continue;
+
+        if (!currentState.connected) {
+            DeviceStatus offline;
+            offline.key = L"logi:" + Hex4(pid) + L":1";
+            const auto* display = device.get("displayName");
+            if ((!display || display->str().empty()) && device.get("extendedDisplayName"))
+                display = device.get("extendedDisplayName");
+            offline.name = L"Logitech " + (display ? Widen(display->str()) : L"device");
+            const auto* signature = device.get("deviceSignature");
+            if (signature && !signature->str().empty() && signature->str().size() < 160)
+                offline.physicalId = L"logitech:" + Widen(signature->str());
+            const auto* kind = device.get("deviceType");
+            const std::string type = kind ? kind->str() : "";
+            offline.kind = type == "KEYBOARD" ? DeviceKind::Keyboard :
+                           type == "MOUSE" ? DeviceKind::Mouse :
+                           type == "HEADSET" ? DeviceKind::Headset :
+                           type == "GAMEPAD" ? DeviceKind::Gamepad : DeviceKind::Other;
+            offline.connected = false;
+            offline.asleep = false;
+            offline.percent = -1; // Never pass a disconnected cached reading as live.
+            offline.graceSec = 0;
+            offline.via = L"Logitech G HUB (disconnected)";
+            offlineByReceiver.emplace(pid, std::move(offline));
+            continue;
+        }
 
         ghubjson::Value battery;
         if (!socket.Get("/battery/" + identifier->str() + "/state", battery))
@@ -222,7 +251,7 @@ void PollGHub(PollContext& ctx) {
         reading.via = L"Logitech G HUB (local)";
         reading.graceSec = 1800;
         reading.percent = percent;
-        reading.asleep = asleep; // Show the last known value dimmed, never as live.
+        reading.asleep = currentState.asleep; // SLEEPING only, not NOT_CONNECTED.
         const auto* charging = info->get("charging");
         reading.charging = charging && charging->type == ghubjson::Value::Boolean && charging->boolean;
         const auto* kind = device.get("deviceType");
@@ -233,5 +262,11 @@ void PollGHub(PollContext& ctx) {
                        type == "GAMEPAD" ? DeviceKind::Gamepad : DeviceKind::Other;
         SaveLogitechBattery(pid, reading);
         ctx.Add(reading, 0x046D, pid);
+    }
+    // Explicit disconnected reports must prevent a 3-day Logitech cache from
+    // creating an apparent live device simply because the receiver is present.
+    for (auto& [pid, offline] : offlineByReceiver) {
+        if (!ctx.IsClaimed(0x046D, pid))
+            ctx.Add(offline, 0x046D, pid);
     }
 }

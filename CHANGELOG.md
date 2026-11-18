@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.10
+
+- Fixed a Logitech G HUB ghost-device condition: NOT_CONNECTED now means disconnected, not asleep. G HUB explicitly disconnected devices invalidate their own stale cached indicators immediately.
+- Physical identities and receiver/slot aliases are used to retire only the matching offline entry, while two actual same-model devices remain distinct.
+- Added unit regression tests for ACTIVE, CONNECTED, SLEEPING, NOT_CONNECTED, and safe cross-poll invalidation.
+- Does not remove valid asleep-device cache or discard old receiver history without evidence.
+
 ## 0.1.9
 
 - Added an explicitly opt-in USB manufacturer and device-name catalogue updater using the public hwdata usb.ids source over HTTPS. Local cache persists offline; invalid updates preserve existing data.

@@ -84,6 +84,38 @@ inline bool SupersededPreviousEntry(const DeviceStatus& previous,
     return false;
 }
 
+// Disconnected is not sleeping. A real G HUB NOT_CONNECTED report invalidates
+// a previous cached entry when they have the same verified identity or the
+// same receiver slot and model. Unrelated same-model units remain separate.
+inline bool InvalidatedByExplicitDisconnect(
+    const DeviceStatus& previous, const std::vector<DeviceStatus>& current) {
+    for (const auto& offline : current) {
+        if (offline.connected || offline.asleep ||
+            offline.kind != previous.kind) continue;
+        if (offline.key == previous.key) return true;
+        if (!offline.physicalId.empty() && !previous.physicalId.empty()) {
+            if (offline.physicalId == previous.physicalId) return true;
+            continue; // Different physical signatures cannot invalidate each other.
+        }
+        if (CanonicalModelName(offline.name) != CanonicalModelName(previous.name))
+            continue;
+        auto sources = [](const DeviceStatus& s) {
+            auto ids=s.sourceKeys;
+            if (ids.empty()) ids.push_back(s.key);
+            return ids;
+        };
+        auto oldAliases=sources(previous);
+        auto offlineAliases=sources(offline);
+        for (const auto& id : oldAliases) {
+            if (id.rfind(L"logi:",0)!=0) continue;
+            if (std::find(offlineAliases.begin(),offlineAliases.end(),id)
+                != offlineAliases.end())
+                return true;
+        }
+    }
+    return false;
+}
+
 // Carefully migrate old cached Logitech records made before a physical
 // identity was persisted. A stale receiver entry may be coalesced with one
 // live device of the same normalized model only when unique in this snapshot.

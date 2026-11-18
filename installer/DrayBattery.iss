@@ -1,5 +1,5 @@
 #define AppName "DrayBattery"
-#define AppVersion "0.1.9"
+#define AppVersion "0.1.10"
 #define AppExe "DrayBattery.exe"
 
 [Setup]
@@ -29,7 +29,7 @@ WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
 ChangesAssociations=no
-VersionInfoVersion=0.1.9.0
+VersionInfoVersion=0.1.10.0
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

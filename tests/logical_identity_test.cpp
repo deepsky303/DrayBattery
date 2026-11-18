@@ -1,4 +1,5 @@
 #include "../src/logical_identity.h"
+#include "../src/drivers/ghub_status.h"
 #include <cassert>
 #include <iostream>
 
@@ -95,5 +96,30 @@ int main(){
     newHub.connected=false;
     assert(!draybattery::SupersededPreviousEntry(oldHid, {newHub}));
 
-    std::cout<<"PASS: physical identity, two USB transports, legacy cache, unique units.\n";
+    // G HUB reports NOT_CONNECTED for offline hardware, unlike SLEEPING.
+    assert(draybattery::ghub::ParseDeviceState("ACTIVE").connected);
+    assert(draybattery::ghub::ParseDeviceState("CONNECTED").connected);
+    assert(draybattery::ghub::ParseDeviceState("SLEEPING").connected);
+    assert(draybattery::ghub::ParseDeviceState("SLEEPING").asleep);
+    const auto notConnected=draybattery::ghub::ParseDeviceState("NOT_CONNECTED");
+    assert(notConnected.known && !notConnected.connected && !notConnected.asleep);
+    assert(!draybattery::ghub::ParseDeviceState("UNKNOWN").known);
+
+    // Explicit disconnected device invalidates its old ghost entry.
+    auto gone=newHub;
+    gone.connected=false;
+    gone.asleep=false;
+    gone.percent=-1;
+    assert(draybattery::InvalidatedByExplicitDisconnect(newHub,{gone}));
+    assert(draybattery::InvalidatedByExplicitDisconnect(oldHid,{gone}));
+    // An unrelated receiver and a different physical unit are unaffected.
+    assert(!draybattery::InvalidatedByExplicitDisconnect(otherReceiver,{gone}));
+    assert(!draybattery::InvalidatedByExplicitDisconnect(anotherUnit,{gone}));
+    gone.asleep=true;
+    assert(!draybattery::InvalidatedByExplicitDisconnect(newHub,{gone}));
+    gone.asleep=false;
+    gone.connected=true;
+    assert(!draybattery::InvalidatedByExplicitDisconnect(newHub,{gone}));
+
+    std::cout<<"PASS: physical identity, two USB transports, legacy cache, unique units, explicit disconnect.\n";
 }
