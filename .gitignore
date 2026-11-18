@@ -1,0 +1,29 @@
+# Build outputs
+build/
+dist/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.zip
+*.7z
+
+# Environment
+.vs/
+*.user
+*.suo
+*.log
+.DS_Store
+Thumbs.db
+
+# Local screenshot diagnostics and preview composites
+docs/_*.png
+docs/_*.webp
+
+# Local diagnostics / test logs
+AUDIT.md
+tool-history.jsonl
+*diagnostic*.txt
+
+# CI workflow is prepared but publishing requires an additional GitHub workflow scope
+.github/workflows/windows.yml

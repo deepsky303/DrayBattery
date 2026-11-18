@@ -1,0 +1,16 @@
+name: Feature request / device support
+description: Suggest an improvement or ask for a new device protocol
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: request
+    attributes:
+      label: What would you like DrayBattery to support?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Device model, connection and protocol information
+      description: Include public documentation if available. Do not include private IDs.

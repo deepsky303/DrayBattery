@@ -1,0 +1,50 @@
+name: Bug report
+description: Report incorrect battery status, crashes or display problems
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue. Before attaching diagnostic output, remove serial numbers and other unique identifiers.
+  - type: input
+    id: version
+    attributes:
+      label: DrayBattery version
+      placeholder: 0.1.7
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2, x64
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device model and connection
+      description: Include model, USB / 2.4 GHz / Bluetooth and operating mode
+      placeholder: Razer Wolverine V3 Pro, Xbox Mode, 2.4 GHz
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened?
+      description: What did you observe and how can it be reproduced?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics (optional)
+      description: Remove all serial numbers and private information before posting
+      render: text
