@@ -24,6 +24,3 @@ docs/_*.webp
 AUDIT.md
 tool-history.jsonl
 *diagnostic*.txt
-
-# CI workflow is prepared but publishing requires an additional GitHub workflow scope
-.github/workflows/windows.yml

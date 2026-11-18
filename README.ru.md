@@ -16,6 +16,7 @@
 
 [![Последний релиз](https://img.shields.io/github/v/release/deepsky303/DrayBattery?style=flat-square&label=release&color=6b46c1)](https://github.com/deepsky303/DrayBattery/releases/latest)
 [![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square&logo=windows)](#установка)
+[![Сборка](https://github.com/deepsky303/DrayBattery/actions/workflows/windows.yml/badge.svg)](https://github.com/deepsky303/DrayBattery/actions/workflows/windows.yml)
 [![Лицензия](https://img.shields.io/badge/license-GPL--3.0--or--later-28a745?style=flat-square)](LICENSE)
 
 </div>
