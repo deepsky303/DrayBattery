@@ -6,10 +6,11 @@ std::wstring DiagnoseRunningApp() {
     if (!window) return L"DrayBattery UI is not running\n";
     DWORD_PTR version = 0;
     if (!SendMessageTimeoutW(window, WM_DRAY_READ_STATUS, 4, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 1000, &version) ||
-        version != 1) return L"Running version does not support status diagnostics\n";
+        version != 2) return L"Running version does not support status diagnostics\n";
     std::wstring text;
     const wchar_t* fields[] = {L"battery_entries", L"visible_entries", L"widget_alive", L"worker_age_ms",
-        L"visible_other", L"visible_mice", L"visible_headsets", L"visible_keyboards", L"visible_gamepads"};
+        L"visible_other", L"visible_mice", L"visible_headsets", L"visible_keyboards", L"visible_gamepads",
+        L"dimmed_other", L"dimmed_mice", L"dimmed_headsets", L"dimmed_keyboards", L"dimmed_gamepads"};
     for (WPARAM i = 0; i < ARRAYSIZE(fields); ++i) {
         DWORD_PTR value = 0;
         if (!SendMessageTimeoutW(window, WM_DRAY_READ_STATUS, i < 4 ? i : i + 1, 0,

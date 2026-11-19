@@ -49,7 +49,7 @@ inline std::vector<DeviceStatus> WindowsBluetoothBatteries(
         s.batteryPropertyId = LowerId(battery->instance);
         s.batteryObservedMs = presence.observedMs;
         s.batteryReportedFiletime = battery->batteryReportedFiletime;
-        s.asleep = true;
+        s.asleep = false; // a connected root with an available Windows level is shown normally
         result.push_back(std::move(s));
     }
     return result;

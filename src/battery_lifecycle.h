@@ -16,6 +16,13 @@ struct BatteryEntry {
     std::uint64_t lastLiveMs = 0, presenceMs = 0, uncertainSinceMs = 0;
 };
 class BatteryLifecycle {
+public:
+    using Observer = void (*)(const wchar_t*, const DeviceStatus&);
+private:
+    Observer observer_ = nullptr;
+    void Emit(const wchar_t* reason, const DeviceStatus& status) const noexcept {
+        if (observer_) { try { observer_(reason, status); } catch (...) {} }
+    }
     std::map<std::wstring, BatteryEntry> entries_;
     std::map<std::wstring, std::uint64_t> invalidAfter_;
     PhysicalPresence presence_;
@@ -32,18 +39,21 @@ class BatteryLifecycle {
         if (seen != windowsSeen_.end()) windowsInvalid_[id] = seen->second;
         windowsReportedInvalid_[id] = windowsReported_[id];
     }
-    static void Dim(BatteryEntry& e) {
+    void Dim(BatteryEntry& e, const wchar_t* reason = L"DIM_NO_CURRENT_READING") {
+        const bool wasDim = e.st.asleep;
         e.st.percent = e.lastPct;
         e.st.asleep = true; // display state, not a measured radio sleep state
         e.st.connected = true;
         e.st.charging = false;
         e.st.batteryFresh = false;
         e.st.lastLiveMs = e.lastLiveMs;
+        if (!wasDim) Emit(reason, e.st);
     }
     static std::uint64_t Deadline(const BatteryEntry& e) {
         return PresenceBacked(e.st) ? 0 : e.lastLiveMs + kUnlinkedSampleMaxAgeMs;
     }
 public:
+    void SetObserver(Observer observer) { observer_ = observer; }
     const std::map<std::wstring, BatteryEntry>& Entries() const { return entries_; }
     bool Expire(std::uint64_t now) {
         bool changed = false;
@@ -51,12 +61,13 @@ public:
             const auto deadline = Deadline(it->second);
             if (deadline && now >= deadline) {
                 Invalidate(it->second.st.connectionId, now);
+                Emit(L"REMOVE_UNLINKED_TIMEOUT", it->second.st);
                 it = entries_.erase(it); changed = true;
             } else {
                 auto& e = it->second;
                 if (PresenceBacked(e.st) && now >= e.presenceMs + kPresenceCheckMaxAgeMs && !e.st.presenceUncertain) {
                     e.st.presenceUncertain = true;
-                    Dim(e);
+                    Dim(e, L"DIM_PRESENCE_UNVERIFIED");
                     changed = true;
                 }
                 ++it;
@@ -81,7 +92,10 @@ public:
         Invalidate(id, now);
         bool changed = false;
         for (auto it = entries_.begin(); it != entries_.end();) {
-            if (it->second.st.connectionId == id) { it = entries_.erase(it); changed = true; }
+            if (it->second.st.connectionId == id) {
+                Emit(L"REMOVE_CONNECTION", it->second.st);
+                it = entries_.erase(it); changed = true;
+            }
             else ++it;
         }
         return changed;
@@ -99,6 +113,7 @@ public:
             const auto presence = ConnectionPresence(p, e.st);
             if (presence == Presence::Absent) {
                 Invalidate(e.st.connectionId, p.observedMs);
+                Emit(L"REMOVE_CONFIRMED_ABSENCE", e.st);
                 it = entries_.erase(it);
                 continue;
             }
@@ -109,7 +124,7 @@ public:
             } else if (!e.uncertainSinceMs) {
                 e.uncertainSinceMs = std::min(now, e.presenceMs + kPresenceCheckMaxAgeMs);
                 e.st.presenceUncertain = true;
-                Dim(e);
+                Dim(e, L"DIM_PRESENCE_UNVERIFIED");
             }
             ++it;
         }
@@ -128,6 +143,14 @@ public:
             if (it == entries_.end()) {
                 for (auto candidate = entries_.begin(); candidate != entries_.end(); ++candidate)
                     if (SamePhysicalDevice(candidate->second.st, s)) { it = candidate; break; }
+            }
+            // Late full polls must not dim or overwrite a newer Windows reading
+            // already delivered by the independent Bluetooth worker.
+            if (s.windowsBatteryProperty &&
+                ((windowsObserved_.count(s.connectionId) && s.batteryObservedMs < windowsObserved_.at(s.connectionId)) ||
+                 (windowsReported_.count(s.connectionId) && s.batteryReportedFiletime < windowsReported_.at(s.connectionId)))) {
+                if (it != entries_.end()) seen.insert(it->first);
+                continue;
             }
             const bool live = s.connected && !s.asleep && !s.batteryCached && s.batteryFresh &&
                 s.percent >= 0 && s.percent <= 100 && s.lastLiveMs && s.lastLiveMs <= now &&
@@ -152,10 +175,15 @@ public:
                 windowsReported_[s.connectionId] = std::max(windowsReported_[s.connectionId], s.batteryReportedFiletime);
             }
             if (it == entries_.end() && !live && !windows) continue;
-            if (!backed && !live) { if (it != entries_.end()) entries_.erase(it); continue; }
+            if (!backed && !live) {
+                if (it != entries_.end()) { Emit(L"REMOVE_UNLINKED_NO_READING", it->second.st); entries_.erase(it); }
+                continue;
+            }
             if (it != entries_.end() && it->second.st.connectionId != s.connectionId && !live && !windows) continue;
-            if (it == entries_.end()) it = entries_.emplace(s.key, BatteryEntry{}).first;
+            const bool added = it == entries_.end();
+            if (added) it = entries_.emplace(s.key, BatteryEntry{}).first;
             auto& e = it->second;
+            const bool wasDim = e.st.asleep;
             seen.insert(it->first);
             if (live && s.lastLiveMs < e.lastLiveMs) continue;
             if (s.physicalId.empty()) s.physicalId = e.st.physicalId;
@@ -172,18 +200,22 @@ public:
                 e.lastPct = s.percent;
                 s.lastLiveMs = 0; // reading a property is not a new measurement
                 e.st = std::move(s);
-                Dim(e);
             } else {
                 if (backed) { e.st.physicalId = s.physicalId; e.st.sourceKeys = std::move(s.sourceKeys); }
                 Dim(e); // never copy cached percent, charging or level over the real sample
             }
             if (backed && presence == Presence::Present) { e.presenceMs = p.observedMs; e.uncertainSinceMs = 0; }
+            if (added) Emit(L"ADD", e.st);
+            else if (wasDim && !e.st.asleep) Emit(L"AVAILABLE", e.st);
         }
         for (auto it = entries_.begin(); it != entries_.end();) {
             auto& e = it->second;
             const bool touched = poll.complete || HasId(poll.polledConnections, e.st.connectionId);
             const bool missing = touched && !seen.count(it->first);
-            if (missing && !PresenceBacked(e.st)) it = entries_.erase(it);
+            if (missing && !PresenceBacked(e.st)) {
+                Emit(L"REMOVE_MISSING_UNLINKED", e.st);
+                it = entries_.erase(it);
+            }
             else { if (missing) Dim(e); ++it; }
         }
         Expire(now);

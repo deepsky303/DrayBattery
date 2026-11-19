@@ -78,6 +78,14 @@ draybattery::BatteryLifecycle g_batteries;
 bool g_placeholder = false;
 HICON g_placeholderIcon = nullptr;
 
+void LogBatteryEvent(const wchar_t* reason, const DeviceStatus& status) {
+    wchar_t line[224]{};
+    swprintf_s(line, L"BATTERY_%ls kind=%d pct=%d dim=%d link=%d cached=%d uncertain=%d",
+        reason, (int)status.kind, status.percent, (int)status.asleep, (int)status.linkKind,
+        (int)status.batteryCached, (int)status.presenceUncertain);
+    LogDrayLifecycle(line);
+}
+
 // ---- helpers ----------------------------------------------------------------------------------
 
 UINT StableId(const std::wstring& key) {
@@ -780,7 +788,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     }
     switch (msg) {
         case WM_DRAY_READ_STATUS:
-            if (wp == 4) return 1; // diagnostic protocol version
+            if (wp == 4) return 2; // diagnostic protocol version
             if (wp == 0) return (LRESULT)g_entries.size();
             if (wp == 1) {
                 LRESULT count = 0;
@@ -794,6 +802,14 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 for (const auto& pair : g_entries)
                     count += (int)pair.second.st.kind == (int)(wp - 5) &&
                         draybattery::VisibleBattery(pair.second.st, g_hidden);
+                return count;
+            }
+            if (wp >= 10 && wp <= 14) {
+                LRESULT count = 0;
+                for (const auto& pair : g_entries)
+                    count += (int)pair.second.st.kind == (int)(wp - 10) &&
+                        draybattery::VisibleBattery(pair.second.st, g_hidden) &&
+                        draybattery::DimmedBattery(pair.second.st);
                 return count;
             }
             return 0;
@@ -1010,6 +1026,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
         return 0;
     }
     g_inst = inst;
+    g_batteries.SetObserver(LogBatteryEvent);
 
     SetUnhandledExceptionFilter(LogUnhandledFailure);
     HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\DrayBatteryTray");

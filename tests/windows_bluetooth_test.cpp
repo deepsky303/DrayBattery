@@ -25,15 +25,38 @@ const BatteryEntry& One(const BatteryLifecycle& state) {
     assert(state.Entries().size() == 1);
     return state.Entries().begin()->second;
 }
-void WindowsDim(const BatteryEntry& e, int pct) {
+void WindowsReported(const BatteryEntry& e, int pct, bool dim = false) {
     assert(e.lastPct == pct && e.st.percent == pct && e.lastLiveMs == 0 && e.st.lastLiveMs == 0);
     assert(e.st.linkKind == LinkKind::Bluetooth && e.st.windowsBatteryProperty && e.st.batteryCached);
-    assert(!e.st.batteryFresh && !e.st.charging && e.st.asleep);
-    assert(VisibleBattery(e.st, {}) && DimmedBattery(e.st) && !ChargingBattery(e.st) && !LowBattery(e.st));
-    assert(BatteryStatusText(e.st).find(L"last reported by Windows, not live") != std::wstring::npos);
+    assert(!e.st.batteryFresh && !e.st.charging && e.st.asleep == dim);
+    assert(VisibleBattery(e.st, {}) && DimmedBattery(e.st) == dim && !ChargingBattery(e.st) && !LowBattery(e.st));
+    assert(BatteryStatusText(e.st).find(dim ? L"last Windows reading" : L"(Windows)") != std::wstring::npos);
     assert(BatteryStatusText(e.st).find(L"asleep") == std::wstring::npos);
 }
 int main() {
+    {
+        // Brightness follows current Windows availability, independently of
+        // whether that OS property proves a fresh hardware acquisition.
+        BatteryLifecycle availability;
+        auto mi = Root(L"available-mi", 100);
+        availability.Apply(Poll({mi}, start), start);
+        WindowsReported(One(availability), 100);
+        mi.percent = -1;
+        availability.Apply(Poll({mi}, start + 1), start + 1);
+        WindowsReported(One(availability), 100, true);
+        mi.percent = 100;
+        availability.Apply(Poll({mi}, start + 2), start + 2);
+        WindowsReported(One(availability), 100); // same value returns without a disconnect
+        mi.connection = Presence::Unknown;
+        availability.Apply(Poll({mi}, start + 3), start + 3);
+        WindowsReported(One(availability), 100, true);
+        mi.connection = Presence::Present;
+        availability.Apply(Poll({mi}, start + 4), start + 4);
+        WindowsReported(One(availability), 100);
+        mi.connection = Presence::Absent;
+        availability.Apply(Poll({mi}, start + 5), start + 5);
+        assert(availability.Entries().empty());
+    }
     {
         // Real Mi Earphones scenario: app starts while paired headphones are off.
         // Presence-only polls see the disconnected root before any battery property.
@@ -45,13 +68,13 @@ int main() {
         assert(late.Entries().empty());
         mi.connection = Presence::Present;
         late.Apply(Poll({mi}, start + 3000), start + 3000);
-        WindowsDim(One(late), 100);
+        WindowsReported(One(late), 100);
         // Independent presence worker publishes battery snapshots as partial BT scopes.
         auto partial = Poll({mi}, start + 4000);
         partial.complete = false;
         partial.polledConnections = partial.presence.btConnected;
         late.Apply(partial, start + 4000);
-        WindowsDim(One(late), 100);
+        WindowsReported(One(late), 100);
     }
     {
         // A newer Windows battery timestamp permits the same percentage on reconnect.
@@ -66,10 +89,10 @@ int main() {
         assert(reconnect.Entries().empty()); // unchanged old report is still blocked
         ++mi.batteryReportedFiletime;
         reconnect.Apply(Poll({mi}, start + 3), start + 3);
-        WindowsDim(One(reconnect), 100);
+        WindowsReported(One(reconnect), 100);
         mi.percent = 50; --mi.batteryReportedFiletime;
         reconnect.Apply(Poll({mi}, start + 4), start + 4);
-        WindowsDim(One(reconnect), 100); // delayed older OS report cannot roll back
+        WindowsReported(One(reconnect), 100); // delayed older OS report cannot roll back
         auto child = mi; child.instance = L"BTHENUM\\{hfp}\\child";
         child.percent = 90; child.batteryReportedFiletime += 2;
         const auto latest = Poll({mi, child}, start + 5);
@@ -86,7 +109,7 @@ int main() {
         PollContext ctx;ctx.Add(cached,0x1234,0x5678,&c);
         auto combined=Poll({root},start,true,ctx.out);
         assert(combined.devices.size()==1 && combined.devices[0].windowsBatteryProperty);
-        BatteryLifecycle initial;initial.Apply(combined,start);WindowsDim(One(initial),9);
+        BatteryLifecycle initial;initial.Apply(combined,start);WindowsReported(One(initial),9);
         auto property=WindowsBluetoothBatteries({root},combined.presence).front();
         assert(MergeLogicalDevices({property,ctx.out[0]})[0].windowsBatteryProperty);
         combined.devices=ctx.out;initial=BatteryLifecycle{};initial.Apply(combined,start);
@@ -94,7 +117,7 @@ int main() {
     }
     BatteryLifecycle state;
     state.Apply(p, start);
-    WindowsDim(One(state), 9); // regression: valid initial Windows property IS visible, DIM
+    WindowsReported(One(state), 9); // connected Windows property is visible at normal brightness
     const auto key = state.Entries().begin()->first;
     assert(!VisibleBattery(One(state).st, {key}));
 
@@ -102,15 +125,15 @@ int main() {
     for (auto elapsed : {90000ull, 1800000ull, 12 * 3600000ull, 30 * 24 * 3600000ull}) {
         const auto at = start + elapsed;
         state.Apply(Poll({root}, at), at);
-        WindowsDim(One(state), 9);
+        WindowsReported(One(state), 9, true);
         assert(!state.Expire(at + 1));
     }
     auto at = start + 30 * 24 * 3600000ull + 10;
     // A stalled or incomplete inventory never turns 25 seconds into disconnection.
-    assert(state.Expire(at + 60000)); WindowsDim(One(state), 9);
+    assert(state.Expire(at + 60000)); WindowsReported(One(state), 9, true);
     assert(One(state).st.presenceUncertain);
     state.Apply(Poll({}, at + 120000, false), at + 120000);
-    WindowsDim(One(state), 9);
+    WindowsReported(One(state), 9, true);
     root.connection = Presence::Absent;
     at += 180000;
     state.Apply(Poll({root}, at), at); assert(state.Entries().empty());
@@ -122,9 +145,9 @@ int main() {
     root.percent=-1;
     ++at;state.Apply(Poll({root,relocated},at),at);assert(state.Entries().empty()); // cache on another service isn't a new sample
     root.percent = 8;
-    ++at; state.Apply(Poll({root}, at), at); WindowsDim(One(state), 8); // changed Windows property, still DIM
+    ++at; state.Apply(Poll({root}, at), at); WindowsReported(One(state), 8); // changed Windows property is available again
     auto delayed=Poll({Root(L"unit-a",99)},at-1);
-    state.Apply(delayed,at);WindowsDim(One(state),8); // older queued property cannot roll the value back
+    state.Apply(delayed,at);WindowsReported(One(state),8); // older queued property cannot roll the value back
 
     // A true vendor report for this exact container supersedes the Windows cache
     // regardless of order, model spelling, source key, or cached percent.
@@ -189,11 +212,11 @@ int main() {
     auto a = Root(L"unit-a", 0), b = Root(L"unit-b", 87);
     multi.Apply(Poll({a, b}), start); assert(multi.Entries().size() == 2);
     b.connection = Presence::Absent;
-    multi.Apply(Poll({a, b}, start + 1), start + 1); WindowsDim(One(multi), 0);
+    multi.Apply(Poll({a, b}, start + 1), start + 1); WindowsReported(One(multi), 0);
     b.connection = Presence::Present; b.percent = -1;
-    multi.Apply(Poll({a, b}, start + 2), start + 2); WindowsDim(One(multi), 0);
+    multi.Apply(Poll({a, b}, start + 2), start + 2); WindowsReported(One(multi), 0);
     // A delayed old generation cannot recreate either Windows or live entries.
     auto old = Poll({Root(L"unit-b", 87)}, start + 3);
-    assert(!multi.Apply(old, start + 3, 1)); WindowsDim(One(multi), 0);
-    std::puts("WINDOWS_BLUETOOTH_TESTS_PASSED (initial DIM, per-root proof, vanished property, days, disconnect/reconnect, stale cache, live priority, UI, service/adapter, dual mode, containers, generation)");
+    assert(!multi.Apply(old, start + 3, 1)); WindowsReported(One(multi), 0);
+    std::puts("WINDOWS_BLUETOOTH_TESTS_PASSED (normal Windows brightness, dim on missing data, per-root proof, vanished property, days, disconnect/reconnect, stale cache, live priority, UI, service/adapter, dual mode, containers, generation)");
 }
