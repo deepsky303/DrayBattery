@@ -19,6 +19,8 @@ struct PollContext {
     bool inventoryComplete = true;
     PhysicalPresence presence;
     HANDLE stopEvent = nullptr;
+    std::wstring* diagnostic = nullptr; // explicit local probe only
+    void Note(const std::wstring& text) { if (diagnostic) *diagnostic += text + L"\n"; }
     bool Stopping() const { return stopEvent && WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0; }
 
     bool IsClaimed(USHORT vid, USHORT pid) const { return claimed.count({ vid, pid }) != 0; }

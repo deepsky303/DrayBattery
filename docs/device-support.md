@@ -72,8 +72,32 @@ The dataset's [license](https://github.com/vcrhonek/hwdata/blob/master/LICENSE) 
 
 ## Identity, duplicates and requests
 
+### Diagnostics without peripheral commands
+
+    DrayBattery.exe --diagnose
+    DrayBattery.exe --status
+    DrayBattery.exe --dump
+    DrayBattery.exe --list --windows-only
+    DrayBattery.exe --list --ghub-only
+
+`--diagnose` reports Bluetooth connection evidence and cached Windows levels,
+XInput/WGI status and HID descriptors. `--status` reads the running UI's visible
+device counts by kind, widget health and polling age. These commands send no
+HID/GIP commands and change no device settings.
+
+Plain `--list` and `--list --wolverine-only` actively query batteries. They are
+blocked while the tray app is running to avoid concurrent receiver requests.
+The Wolverine probe sends only GET `0x07/0x80`; the unverified `0x07/0x84` flag is
+no longer interpreted as charging state. For local UI verification, `--os-only`
+uses Windows properties and localhost G HUB without peripheral commands.
+
+This fix was hardware-tested with Wolverine `1532:0A4C` in Windows mode.
+In Xbox mode (`1532:0A3F`), automatic use of the old model-only cache is disabled;
+the foreground GIP reader menu item does not imply a working automatic indicator.
+That mode still needs separate verification outside gameplay.
+
 VID:PID identifies a device **model/type**, not a specific physical unit. DrayBattery only merges different transports with verified identity or receiver/slot evidence. Two real same-model units must remain separate.
 
 For Wolverine V3 Pro, cross-mode mapping was verified with one physical controller; multiple simultaneous units remain unverified.
 
-To request battery support, run the offline **--identify** and **--list** commands, specify the exact model, firmware and transport, and open an [issue](https://github.com/deepsky303/DrayBattery/issues). Review diagnostics before sharing: remove serials, private paths and unique hardware signatures. A model name alone is not sufficient evidence for implementing a battery protocol.
+To request battery support, start with **--identify**, **--diagnose** and **--status**, specify the exact model, firmware and transport, and open an [issue](https://github.com/deepsky303/DrayBattery/issues). Review diagnostics before sharing: remove serials, private paths and unique hardware signatures. A model name alone is not sufficient evidence for implementing a battery protocol.

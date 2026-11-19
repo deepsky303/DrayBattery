@@ -19,7 +19,7 @@ if not exist build\staging mkdir build\staging
 if not exist dist mkdir dist
 rc /nologo /I "res" /fo "build\app.res" "res\app.rc"
 if errorlevel 1 exit /b 4
-cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /W3 /DNOMINMAX /DUNICODE /D_UNICODE /D__FIReference_1_INT32=__FIReference_1_int /D_WIN32_WINNT=0x0A00 /DWINVER=0x0A00 /I "src" /Fo"build\\" /Fe"build\staging\DrayBattery.exe" src\*.cpp src\drivers\*.cpp "build\app.res" /link /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF hid.lib setupapi.lib cfgmgr32.lib ole32.lib comctl32.lib gdi32.lib runtimeobject.lib winhttp.lib shell32.lib user32.lib advapi32.lib winmm.lib
+cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /Zi /Fd"build\staging\compile.pdb" /W3 /DNOMINMAX /DUNICODE /D_UNICODE /D__FIReference_1_INT32=__FIReference_1_int /D_WIN32_WINNT=0x0A00 /DWINVER=0x0A00 /I "src" /Fo"build\\" /Fe"build\staging\DrayBattery.exe" src\*.cpp src\drivers\*.cpp "build\app.res" /link /DEBUG /PDB:"build\staging\DrayBattery.pdb" /SUBSYSTEM:WINDOWS /OPT:REF /OPT:ICF hid.lib setupapi.lib cfgmgr32.lib ole32.lib comctl32.lib gdi32.lib runtimeobject.lib winhttp.lib shell32.lib user32.lib advapi32.lib winmm.lib
 if errorlevel 1 exit /b 5
 echo Build succeeded: build\staging\DrayBattery.exe
 exit /b 0

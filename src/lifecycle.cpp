@@ -2,6 +2,11 @@
 #include <windows.h>
 #include <cstdio>
 #include <string>
+#include <atomic>
+
+namespace { std::atomic<const wchar_t*> pollStage{L"idle"}; }
+void SetDrayPollStage(const wchar_t* stage) { pollStage.store(stage); }
+const wchar_t* DrayPollStage() { return pollStage.load(); }
 
 void LogDrayLifecycleCode(const wchar_t* event, unsigned long code) {
     wchar_t text[160]{};

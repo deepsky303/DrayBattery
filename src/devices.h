@@ -34,6 +34,7 @@ struct DeviceStatus {
     bool windowsBatteryProperty = false; // OS-reported level; never a live acquisition
     std::wstring batteryPropertyId; // exact PnP node that supplied the Windows property
     std::uint64_t batteryObservedMs = 0; // time we READ the property, not battery measurement time
+    std::uint64_t batteryReportedFiletime = 0; // optional Windows battery-update timestamp
     bool presenceUncertain = false;
     bool ghub = false;         // eligible for read-only localhost status refreshes
     std::uint64_t lastLiveMs = 0; // monotonic acquisition time; zero means no live sample

@@ -21,6 +21,7 @@
 #include "battery_lifecycle.h"
 #include "battery_view.h"
 #include "lifecycle.h"
+#include "diagnostics.h"
 #include "widget.h"
 #include "palette.h"
 #include "poll_schedule.h"
@@ -61,6 +62,7 @@ UINT g_taskbarCreatedMsg;
 bool g_lightTaskbar;
 bool g_wantWidget = true;  // user's choice: taskbar widget (default) or tray icons
 bool g_useWidget = false;  // what is actually shown right now
+bool g_osOnly = false; // local staging: no HID/vendor battery commands
 
 struct TrayEntry {
     UINT uid = 0;
@@ -490,6 +492,7 @@ void Reconcile() {
     const bool stalled = progress && now - progress > 120000;
     if (stalled != workerStalled) {
         LogDrayLifecycle(stalled ? L"WORKER_STALLED(120s)" : L"WORKER_RECOVERED");
+        if (stalled) LogDrayLifecycle((std::wstring(L"STALLED_DRIVER(") + DrayPollStage() + L")").c_str());
         workerStalled = stalled;
     }
 }
@@ -591,7 +594,7 @@ void ShowMenu() {
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(m);
     switch (cmd) {
-        case ID_REFRESH: SetEvent(g_refreshEvt); break;
+        case ID_REFRESH: LogDrayLifecycle(L"REFRESH_REQUEST(menu)"); SetEvent(g_refreshEvt); break;
         case ID_REFRESH_XBOX: LaunchXboxBatteryReader(); break;
         case ID_DEVICE_DB_UPDATE: LaunchDeviceNamesUpdater(); break;
         case ID_STYLE_COLORED: SetAppearanceChoice(palette::IconStyle::Colored); break;
@@ -666,7 +669,11 @@ DWORD WINAPI PresenceWorker(LPVOID) {
             auto poll = std::make_unique<DevicePoll>();
             poll->complete = false;
             poll->generation = g_deviceGeneration.load();
-            poll->presence = EnumBluetoothPresence(); // also enumerates exact present USB ancestors
+            PollContext ctx;
+            PollBluetooth(ctx); // OS properties only; no Bluetooth/device commands
+            poll->presence = std::move(ctx.presence);
+            poll->polledConnections = poll->presence.btConnected;
+            poll->devices = std::move(ctx.out);
             if (!g_stopping.load() && PostMessageW(g_hwnd, WM_RESULTS, 0, (LPARAM)poll.get())) poll.release();
         } catch (...) { /* Missing verification dims as unverified; it cannot prove removal. */ }
         if (WaitForSingleObject(g_stopEvt, 2000) != WAIT_TIMEOUT) break;
@@ -691,13 +698,19 @@ DWORD WINAPI Worker(LPVOID) {
             PollContext ctx;
             ctx.stopEvent = g_stopEvt;
             if (now >= nextFull || poll->generation != inventoryGeneration) {
-                PollAllDevices(ctx, g_stopEvt);
+                if (g_osOnly) {
+                    ctx.colls = EnumHid(&ctx.inventoryComplete);
+                    PollGHub(ctx);
+                    PollBluetooth(ctx);
+                    PollXInput(ctx);
+                } else PollAllDevices(ctx, g_stopEvt);
                 inventory = ctx.colls;
                 logitechLinks = draybattery::logitech::Connections(inventory);
                 inventoryGeneration = poll->generation;
                 hubLinks.clear();
                 retryLinks.clear();
                 targets.Observe(ctx.out, logitechLinks);
+                if (g_osOnly) retryLinks.clear();
                 nextFull = GetTickCount64() + draybattery::PollIntervalMs(std::min(fullPolls, 4u));
                 if (fullPolls < 4) ++fullPolls;
             } else {
@@ -766,6 +779,24 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     switch (msg) {
+        case WM_DRAY_READ_STATUS:
+            if (wp == 4) return 1; // diagnostic protocol version
+            if (wp == 0) return (LRESULT)g_entries.size();
+            if (wp == 1) {
+                LRESULT count = 0;
+                for (const auto& pair : g_entries) count += draybattery::VisibleBattery(pair.second.st, g_hidden);
+                return count;
+            }
+            if (wp == 2) return widget::Alive();
+            if (wp == 3) return (LRESULT)(GetTickCount64() - g_workerProgress.load());
+            if (wp >= 5 && wp <= 9) {
+                LRESULT count = 0;
+                for (const auto& pair : g_entries)
+                    count += (int)pair.second.st.kind == (int)(wp - 5) &&
+                        draybattery::VisibleBattery(pair.second.st, g_hidden);
+                return count;
+            }
+            return 0;
         case WM_RESULTS: {
             std::unique_ptr<DevicePoll> poll(reinterpret_cast<DevicePoll*>(lp));
             if (poll) OnResults(*poll);
@@ -853,7 +884,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 // `DrayBattery.exe --list` prints what it finds, `--dump` every HID collection.
-int ListToConsole(bool dump, bool identify = false, bool info = false, bool update = false, bool ghubOnly = false) {
+enum class ConsoleMode { List, Dump, Identify, DbInfo, UpdateDb, GHub, Windows, Wolverine, Diagnose, Status };
+int ListToConsole(ConsoleMode mode) {
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     if (!out || out == INVALID_HANDLE_VALUE) {
         if (AttachConsole(ATTACH_PARENT_PROCESS)) out = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -865,20 +897,40 @@ int ListToConsole(bool dump, bool identify = false, bool info = false, bool upda
         DWORD w;
         WriteFile(out, u.data(), (DWORD)u.size(), &w, nullptr);
     };
-    if (update) {
+    if (mode == ConsoleMode::Diagnose) { write(DiagnoseConnectedDevices()); return 0; }
+    if (mode == ConsoleMode::Status) { write(DiagnoseRunningApp()); return 0; }
+    if (mode == ConsoleMode::UpdateDb) {
         std::wstring message;
         bool ok = draybattery::device_db::UpdateNames(message);
         write(message + L"\n");
         return ok ? 0 : 1;
     }
-    if (info) { write(draybattery::device_db::CacheInfo()); return 0; }
-    if (identify) { write(draybattery::device_db::IdentifyConnectedHid()); return 0; }
-    if (dump) {
+    if (mode == ConsoleMode::DbInfo) { write(draybattery::device_db::CacheInfo()); return 0; }
+    if (mode == ConsoleMode::Identify) { write(draybattery::device_db::IdentifyConnectedHid()); return 0; }
+    if (mode == ConsoleMode::Dump) {
         write(DumpHidCollections());
         return 0;
     }
+    if ((mode == ConsoleMode::List || mode == ConsoleMode::Wolverine) && FindWindowW(L"DrayBatteryWnd", nullptr)) {
+        write(L"Active vendor probing is blocked while the tray app is running.\n"
+              L"Use --diagnose, --status, --list --windows-only or --list --ghub-only.\n");
+        return 2; // avoid concurrent controller/HID requests from a second process
+    }
     std::vector<DeviceStatus> list;
-    if (ghubOnly) {
+    if (mode == ConsoleMode::Wolverine) {
+        PollContext ctx;
+        std::wstring diagnostic;
+        ctx.diagnostic = &diagnostic;
+        ctx.colls = EnumHid();
+        PollWolverinePc(ctx); // one documented battery GET; no charging/config commands
+        write(diagnostic);
+        list = std::move(ctx.out);
+    } else if (mode == ConsoleMode::Windows) {
+        PollContext ctx;
+        PollBluetooth(ctx);
+        PollXInput(ctx);
+        list = draybattery::MergeLogicalDevices(ctx.out);
+    } else if (mode == ConsoleMode::GHub) {
         // Read-only acceptance path: metadata enumeration + localhost G HUB GETs.
         // No vendor/HID battery commands, input reports, serial or XInput calls.
         PollContext ctx;
@@ -901,10 +953,29 @@ int ListToConsole(bool dump, bool identify = false, bool info = false, bool upda
 LONG WINAPI LogUnhandledFailure(EXCEPTION_POINTERS* exception) {
     LogDrayLifecycleCode(L"UNHANDLED_EXCEPTION", exception && exception->ExceptionRecord ?
         exception->ExceptionRecord->ExceptionCode : 0);
+    wchar_t detail[224]{};
+    const auto address = exception && exception->ExceptionRecord ?
+        (std::uintptr_t)exception->ExceptionRecord->ExceptionAddress : 0;
+    HMODULE module = nullptr;
+    wchar_t path[MAX_PATH]{};
+    if (address) GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                  (LPCWSTR)address, &module);
+    if (module) GetModuleFileNameW(module, path, MAX_PATH);
+    const wchar_t* name = wcsrchr(path, L'\\'); name = name ? name + 1 : path;
+    swprintf_s(detail,L"FAULT_CONTEXT thread=%lu module=%.64ls offset=0x%llX worker=%.32ls",
+        GetCurrentThreadId(), name,
+        (unsigned long long)(module ? address - (std::uintptr_t)module : address), DrayPollStage());
+    LogDrayLifecycle(detail);
     return EXCEPTION_CONTINUE_SEARCH; // preserve Windows error reporting
 }
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
+    SetUnhandledExceptionFilter(LogUnhandledFailure); // include diagnostic/CLI failures
+    if (cmdLine && wcsstr(cmdLine, L"--diagnose"))
+        return ListToConsole(ConsoleMode::Diagnose);
+    if (cmdLine && wcsstr(cmdLine, L"--status"))
+        return ListToConsole(ConsoleMode::Status);
+    g_osOnly = cmdLine && wcsstr(cmdLine, L"--os-only");
     if (cmdLine && wcsstr(cmdLine, L"--xbox-refresh")) {
         int result = RunWolverineXboxRefresh();
         if (result == 0)
@@ -920,13 +991,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
                         MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
             return ok ? 0 : 1;
         }
-        return ListToConsole(false,false,false,true);
+        return ListToConsole(ConsoleMode::UpdateDb);
     }
-    if (cmdLine && wcsstr(cmdLine, L"--db-info")) return ListToConsole(false,false,true);
-    if (cmdLine && wcsstr(cmdLine, L"--identify")) return ListToConsole(false,true);
-    if (cmdLine && wcsstr(cmdLine, L"--list"))
-        return ListToConsole(false,false,false,false,wcsstr(cmdLine,L"--ghub-only") != nullptr);
-    if (cmdLine && wcsstr(cmdLine, L"--dump")) return ListToConsole(true);
+    if (cmdLine && wcsstr(cmdLine, L"--db-info")) return ListToConsole(ConsoleMode::DbInfo);
+    if (cmdLine && wcsstr(cmdLine, L"--identify")) return ListToConsole(ConsoleMode::Identify);
+    if (cmdLine && wcsstr(cmdLine, L"--list")) {
+        const auto mode = g_osOnly || wcsstr(cmdLine, L"--windows-only") ? ConsoleMode::Windows :
+            wcsstr(cmdLine, L"--ghub-only") ? ConsoleMode::GHub :
+            wcsstr(cmdLine, L"--wolverine-only") ? ConsoleMode::Wolverine : ConsoleMode::List;
+        return ListToConsole(mode);
+    }
+    if (cmdLine && wcsstr(cmdLine, L"--dump")) return ListToConsole(ConsoleMode::Dump);
     if (cmdLine && wcsstr(cmdLine, L"--quit")) {  // used by the installer before upgrading/uninstalling
         if (HWND w = FindWindowW(L"DrayBatteryWnd", nullptr)) {
             PostMessageW(w, WM_CLOSE, 0, 0);

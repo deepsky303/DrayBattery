@@ -21,6 +21,7 @@ bool IsBatteryUsage(USHORT page, USAGE usage) {
 }
 
 const DEVPROPKEY kBtBattery = { { 0x104EA319, 0x6EE2, 0x4701, { 0xBD, 0x47, 0x8D, 0xDB, 0xF4, 0x25, 0xBB, 0xE5 } }, 2 };
+const DEVPROPKEY kBtBatteryUpdated = { kBtBattery.fmtid, 7 };
 const DEVPROPKEY kIsConnected = { { 0x83DA6326, 0x97A6, 0x4088, { 0x94, 0x53, 0xA1, 0x92, 0x3F, 0x57, 0x3B, 0x29 } }, 15 };
 const DEVPROPKEY kClassOfDevice = { { 0x2BD67D8B, 0x8BEB, 0x48D5, { 0x87, 0xE0, 0x6C, 0xDA, 0x34, 0x28, 0x04, 0x0A } }, 10 };
 
@@ -99,7 +100,7 @@ void PollGenericHid(PollContext& ctx) {
 }
 
 namespace {
-PhysicalPresence ReadPhysicalPresence(PollContext* ctx) {
+PhysicalPresence ReadPhysicalPresence(PollContext* ctx, std::wstring* diagnostic = nullptr) {
     HDEVINFO di = SetupDiGetClassDevsW(nullptr, nullptr, nullptr, DIGCF_ALLCLASSES | DIGCF_PRESENT);
     if (di == INVALID_HANDLE_VALUE) return {};
     std::vector<draybattery::BluetoothNode> nodes;
@@ -142,12 +143,29 @@ PhysicalPresence ReadPhysicalPresence(PollContext* ctx) {
         BYTE pct = 0;
         if (ctx && SetupDiGetDevicePropertyW(di, &dd, &kBtBattery, &t, &pct, sizeof(pct), nullptr, 0) &&
             t == DEVPROP_TYPE_BYTE && pct <= 100) n.percent = pct;
+        FILETIME updated{};
+        if (n.percent >= 0 && SetupDiGetDevicePropertyW(di, &dd, &kBtBatteryUpdated, &t,
+                (PBYTE)&updated, sizeof(updated), nullptr, 0) && t == DEVPROP_TYPE_FILETIME)
+            n.batteryReportedFiletime = (std::uint64_t(updated.dwHighDateTime) << 32) | updated.dwLowDateTime;
         nodes.push_back(std::move(n));
     }
     SetupDiDestroyDeviceInfoList(di);
     auto p = draybattery::BluetoothPresence(nodes, complete && bluetoothComplete, GetTickCount64());
     p.usbPresent.assign(usb.begin(), usb.end());
     p.usbComplete = complete;
+    if (diagnostic) for (const auto& root : nodes) {
+        if (!draybattery::BluetoothPeripheralRoot(root.instance)) continue;
+        *diagnostic += root.name + L": root=" + (root.connection == Presence::Present ? L"connected" :
+            root.connection == Presence::Absent ? L"disconnected" : L"unknown");
+        bool found = false;
+        for (const auto& n : nodes) if (n.container == root.container && n.percent >= 0) {
+            found = true;
+            *diagnostic += L"; Windows cached battery=" + std::to_wstring(n.percent) +
+                L"%; timestamp=" + std::to_wstring(n.batteryReportedFiletime);
+        }
+        if (!found) *diagnostic += L"; Windows battery unavailable";
+        *diagnostic += L"\n";
+    }
     if (ctx) for (auto s : draybattery::WindowsBluetoothBatteries(nodes, p)) {
         s.name = StripServiceSuffix(std::move(s.name));
         if (s.kind == DeviceKind::Other) s.kind = GuessKind(s.name);
@@ -159,3 +177,9 @@ PhysicalPresence ReadPhysicalPresence(PollContext* ctx) {
 
 PhysicalPresence EnumBluetoothPresence() { return ReadPhysicalPresence(nullptr); }
 void PollBluetooth(PollContext& ctx) { ctx.presence = ReadPhysicalPresence(&ctx); }
+std::wstring DiagnoseBluetooth() {
+    PollContext ctx;
+    std::wstring text;
+    ctx.presence = ReadPhysicalPresence(&ctx, &text);
+    return text;
+}

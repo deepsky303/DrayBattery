@@ -1,5 +1,6 @@
 #include "hid.h"
 #include "bluetooth_presence.h"
+#include "usb_receiver_role.h"
 
 #include <setupapi.h>
 #include <cfgmgr32.h>
@@ -11,7 +12,7 @@
 #include <cwctype>
 
 namespace {
-bool ReceiverDescription(DEVINST node) {
+bool ReceiverDescription(DEVINST node, const std::wstring& id) {
     for (const auto* key : {&DEVPKEY_Device_FriendlyName, &DEVPKEY_Device_DeviceDesc,
                             &DEVPKEY_Device_BusReportedDeviceDesc}) {
         wchar_t text[512]{};
@@ -20,6 +21,7 @@ bool ReceiverDescription(DEVINST node) {
         if (CM_Get_DevNode_PropertyW(node, key, &type, (PBYTE)text, &bytes, 0) != CR_SUCCESS ||
             type != DEVPROP_TYPE_STRING) continue;
         const auto name = draybattery::LowerId(text);
+        if (draybattery::WolverineReceiverDescription(id, name)) return true;
         for (const auto* word : {L"receiver", L"dongle"}) {
             const auto pos = name.find(word);
             const auto end = pos + wcslen(word);
@@ -57,7 +59,7 @@ void PopulatePhysicalLink(HidColl& c, DEVINST node) {
             if (!bluetooth) {
                 c.connectionId = normalized;
                 c.transport = LinkKind::UsbCable;
-                c.receiverEvidence = ReceiverDescription(node);
+                c.receiverEvidence = ReceiverDescription(node, normalized);
             }
             break; // never bind a BT peripheral to the host radio's USB parent
         }

@@ -4,6 +4,7 @@
 //  2. XInput fallback: coarse levels (empty / low / medium / full) shown as text, also covering
 //     headsets plugged into a controller.
 #include "drivers.h"
+#include "../diagnostics.h"
 
 #include <roapi.h>
 #include <winstring.h>
@@ -128,6 +129,56 @@ const XInputApi& LoadXInput() {
 }
 
 }  // namespace
+
+std::wstring DiagnoseWindowsControllers() {
+    std::wstring text;
+    const auto& api = LoadXInput();
+    for (DWORD slot = 0; slot < 4 && api.state && api.battery; ++slot) {
+        XINPUT_STATE state{};
+        const auto result = api.state(slot, &state);
+        text += L"XInput slot " + std::to_wstring(slot) + L" state_result=" + std::to_wstring(result);
+        if (result == ERROR_SUCCESS) {
+            XINPUT_BATTERY_INFORMATION bi{};
+            const auto battery = api.battery(slot, BATTERY_DEVTYPE_GAMEPAD, &bi);
+            text += L" battery_result=" + std::to_wstring(battery) + L" type=" +
+                std::to_wstring(bi.BatteryType) + L" level=" + std::to_wstring(bi.BatteryLevel);
+        }
+        text += L"\n";
+    }
+    auto* statics = Statics();
+    __FIVectorView_1_Windows__CGaming__CInput__CRawGameController* controllers = nullptr;
+    if (!statics || FAILED(statics->get_RawGameControllers(&controllers)) || !controllers)
+        return text + L"WGI inventory unavailable\n";
+    UINT32 count = 0;
+    controllers->get_Size(&count);
+    for (UINT32 i = 0; i < count; ++i) {
+        IRawGameController* raw = nullptr;
+        if (FAILED(controllers->GetAt(i, &raw)) || !raw) continue;
+        UINT16 vid = 0, pid = 0;
+        raw->get_HardwareVendorId(&vid); raw->get_HardwareProductId(&pid);
+        text += L"WGI " + Hex4(vid) + L":" + Hex4(pid);
+        IGameControllerBatteryInfo* info = nullptr;
+        IBatteryReport* report = nullptr;
+        HRESULT result = raw->QueryInterface(__uuidof(IGameControllerBatteryInfo), (void**)&info);
+        if (SUCCEEDED(result) && info) result = info->TryGetBatteryReport(&report);
+        if (SUCCEEDED(result) && report) {
+            __FIReference_1_INT32 *remaining = nullptr, *full = nullptr;
+            report->get_RemainingCapacityInMilliwattHours(&remaining);
+            report->get_FullChargeCapacityInMilliwattHours(&full);
+            INT32 r = -1, f = -1;
+            if (remaining) remaining->get_Value(&r);
+            if (full) full->get_Value(&f);
+            text += L" cached_remaining=" + std::to_wstring(r) + L" cached_full=" + std::to_wstring(f);
+            Release(remaining); Release(full);
+        } else text += L" battery_report_unavailable";
+        if (vid == 0x1532 && (pid == 0x0A4C || pid == 0x0A3F))
+            text += L" (requires Wolverine-specific protocol)";
+        text += L"\n";
+        Release(report); Release(info); Release(raw);
+    }
+    Release(controllers);
+    return text;
+}
 
 void PollXInput(PollContext& ctx) {
     // An Xbox controller on Bluetooth may already be listed with a real percentage.

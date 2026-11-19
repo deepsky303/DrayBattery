@@ -19,15 +19,18 @@ class BatteryLifecycle {
     std::map<std::wstring, BatteryEntry> entries_;
     std::map<std::wstring, std::uint64_t> invalidAfter_;
     PhysicalPresence presence_;
-    // A reconnect cannot replay the same undated Windows property. Keep the last
-    // property signature even if it vanishes before disconnection. Session-only.
+    // A reconnect cannot replay a previously observed, unchanged Windows property.
+    // A first-ever sample is allowed once the exact root connects. A newer Windows
+    // report timestamp permits an unchanged percentage, always displayed as cached.
     std::map<std::wstring, std::pair<std::wstring, int>> windowsSeen_;
     std::map<std::wstring, std::pair<std::wstring, int>> windowsInvalid_;
     std::map<std::wstring, std::uint64_t> windowsObserved_;
+    std::map<std::wstring, std::uint64_t> windowsReported_, windowsReportedInvalid_;
     void Invalidate(const std::wstring& id, std::uint64_t at) {
         invalidAfter_[id] = std::max(invalidAfter_[id], at);
         const auto seen = windowsSeen_.find(id);
         if (seen != windowsSeen_.end()) windowsInvalid_[id] = seen->second;
+        windowsReportedInvalid_[id] = windowsReported_[id];
     }
     static void Dim(BatteryEntry& e) {
         e.st.percent = e.lastPct;
@@ -134,14 +137,20 @@ public:
             const auto blocked = windowsInvalid_.find(s.connectionId);
             const bool windows = s.linkKind == LinkKind::Bluetooth && s.windowsBatteryProperty &&
                 s.batteryCached && s.connected && s.percent >= 0 && s.percent <= 100 &&
+                (!windowsReported_.count(s.connectionId) || s.batteryReportedFiletime >= windowsReported_.at(s.connectionId)) &&
                 !s.batteryPropertyId.empty() && s.batteryObservedMs && s.batteryObservedMs <= now &&
                 (!windowsObserved_.count(s.connectionId) || s.batteryObservedMs >= windowsObserved_.at(s.connectionId)) &&
                 presence == Presence::Present && p.observedMs <= now && now - p.observedMs <= kPresenceCheckMaxAgeMs &&
                 (!invalidAfter_.count(s.connectionId) ||
                     (s.batteryObservedMs > invalidAfter_.at(s.connectionId) &&
-                     blocked != windowsInvalid_.end() && blocked->second.first == signature.first &&
-                     blocked->second.second != signature.second));
-            if (windows) { windowsSeen_[s.connectionId] = signature; windowsObserved_[s.connectionId] = s.batteryObservedMs; }
+                     (blocked == windowsInvalid_.end() ||
+                      (blocked->second.first == signature.first && blocked->second.second != signature.second) ||
+                      s.batteryReportedFiletime > windowsReportedInvalid_[s.connectionId])));
+            if (windows) {
+                windowsSeen_[s.connectionId] = signature;
+                windowsObserved_[s.connectionId] = s.batteryObservedMs;
+                windowsReported_[s.connectionId] = std::max(windowsReported_[s.connectionId], s.batteryReportedFiletime);
+            }
             if (it == entries_.end() && !live && !windows) continue;
             if (!backed && !live) { if (it != entries_.end()) entries_.erase(it); continue; }
             if (it != entries_.end() && it->second.st.connectionId != s.connectionId && !live && !windows) continue;

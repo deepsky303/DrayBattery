@@ -67,4 +67,8 @@ cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /W4 /DNOMINMAX /DUNICODE /D_UNICODE /
 if not "%ERRORLEVEL%"=="0" exit /b 27
 "build\transport_role_test.exe"
 if not "%ERRORLEVEL%"=="0" exit /b 28
+cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /DNOMINMAX /DUNICODE /D_UNICODE /I "src" /Fe"build\wolverine_protocol_test.exe" tests\wolverine_protocol_test.cpp
+if errorlevel 1 exit /b 29
+"build\wolverine_protocol_test.exe"
+if errorlevel 1 exit /b 30
 echo ALL_TESTS_PASSED

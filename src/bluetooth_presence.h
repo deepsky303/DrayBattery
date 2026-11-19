@@ -22,6 +22,7 @@ struct BluetoothNode {
     Presence connection = Presence::Unknown;
     int percent = -1;
     unsigned classOfDevice = 0;
+    std::uint64_t batteryReportedFiletime = 0;
 };
 inline PhysicalPresence BluetoothPresence(const std::vector<BluetoothNode>& nodes,
                                          bool complete, std::uint64_t at) {

@@ -34,6 +34,47 @@ void WindowsDim(const BatteryEntry& e, int pct) {
     assert(BatteryStatusText(e.st).find(L"asleep") == std::wstring::npos);
 }
 int main() {
+    {
+        // Real Mi Earphones scenario: app starts while paired headphones are off.
+        // Presence-only polls see the disconnected root before any battery property.
+        BatteryLifecycle late;
+        auto mi = Root(L"late-mi", 100);
+        mi.connection = Presence::Absent;
+        late.Apply(Poll({mi}, start), start);
+        late.Apply(Poll({mi}, start + 2000), start + 2000);
+        assert(late.Entries().empty());
+        mi.connection = Presence::Present;
+        late.Apply(Poll({mi}, start + 3000), start + 3000);
+        WindowsDim(One(late), 100);
+        // Independent presence worker publishes battery snapshots as partial BT scopes.
+        auto partial = Poll({mi}, start + 4000);
+        partial.complete = false;
+        partial.polledConnections = partial.presence.btConnected;
+        late.Apply(partial, start + 4000);
+        WindowsDim(One(late), 100);
+    }
+    {
+        // A newer Windows battery timestamp permits the same percentage on reconnect.
+        BatteryLifecycle reconnect;
+        auto mi = Root(L"timestamp-mi", 100);
+        mi.batteryReportedFiletime = 1000000;
+        reconnect.Apply(Poll({mi}, start), start);
+        mi.connection = Presence::Absent;
+        reconnect.Apply(Poll({mi}, start + 1), start + 1);
+        mi.connection = Presence::Present;
+        reconnect.Apply(Poll({mi}, start + 2), start + 2);
+        assert(reconnect.Entries().empty()); // unchanged old report is still blocked
+        ++mi.batteryReportedFiletime;
+        reconnect.Apply(Poll({mi}, start + 3), start + 3);
+        WindowsDim(One(reconnect), 100);
+        mi.percent = 50; --mi.batteryReportedFiletime;
+        reconnect.Apply(Poll({mi}, start + 4), start + 4);
+        WindowsDim(One(reconnect), 100); // delayed older OS report cannot roll back
+        auto child = mi; child.instance = L"BTHENUM\\{hfp}\\child";
+        child.percent = 90; child.batteryReportedFiletime += 2;
+        const auto latest = Poll({mi, child}, start + 5);
+        assert(latest.devices.size() == 1 && latest.devices.front().percent == 90);
+    }
     auto root = Root();
     auto p = Poll({root});
     assert(p.devices.size() == 1 && !p.devices[0].batteryFresh && p.devices[0].lastLiveMs == 0);

@@ -29,7 +29,9 @@ inline std::vector<DeviceStatus> WindowsBluetoothBatteries(
                 instance.rfind(L"bthledevice\\", 0)) continue;
             const bool positiveRoot = BluetoothPeripheralRoot(instance) && n.connection == Presence::Present;
             if (positiveRoot && !root) root = &n;
-            if (n.percent >= 0 && n.percent <= 100 && (!battery || positiveRoot)) battery = &n;
+            if (n.percent >= 0 && n.percent <= 100 && (!battery ||
+                n.batteryReportedFiletime > battery->batteryReportedFiletime ||
+                (n.batteryReportedFiletime == battery->batteryReportedFiletime && positiveRoot))) battery = &n;
         }
         if (!root || !battery) continue;
         DeviceStatus s;
@@ -46,6 +48,7 @@ inline std::vector<DeviceStatus> WindowsBluetoothBatteries(
         s.windowsBatteryProperty = true;
         s.batteryPropertyId = LowerId(battery->instance);
         s.batteryObservedMs = presence.observedMs;
+        s.batteryReportedFiletime = battery->batteryReportedFiletime;
         s.asleep = true;
         result.push_back(std::move(s));
     }
