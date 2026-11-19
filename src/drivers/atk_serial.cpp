@@ -16,7 +16,7 @@
 
 namespace {
 
-struct Port { std::wstring name; USHORT pid; };
+struct Port { std::wstring name; USHORT pid; HidColl source; };
 
 std::vector<Port> FindPorts() {
     std::vector<Port> out;
@@ -37,7 +37,12 @@ std::vector<Port> FindPorts() {
         wchar_t name[32] = {};
         DWORD sz = sizeof(name) - sizeof(wchar_t), type = 0;
         if (RegQueryValueExW(k, L"PortName", nullptr, &type, (BYTE*)name, &sz) == ERROR_SUCCESS && type == REG_SZ)
-            out.push_back({ name, pid });
+        {
+            HidColl source;
+            source.path = inst;
+            PopulatePhysicalLink(source, dd.DevInst);
+            out.push_back({ name, pid, std::move(source) });
+        }
         RegCloseKey(k);
     }
     SetupDiDestroyDeviceInfoList(di);
@@ -104,7 +109,7 @@ private:
 
 void PollAtkSerial(PollContext& ctx) {
     for (const Port& p : FindPorts()) {
-        if (ctx.IsClaimed(0x373B, p.pid)) continue;
+        if (ctx.IsClaimed(0x373B, p.pid) && ctx.SourceHandled(p.source)) continue;
         Serial port(p.name);
         if (!port.ok()) continue;  // in use (ATK app open) or not a working port
         std::vector<BYTE> data;
@@ -114,11 +119,12 @@ void PollAtkSerial(PollContext& ctx) {
         s.name = L"ATK N9 Pro";
         s.kind = DeviceKind::Headset;
         s.via = p.pid == 0x11CA ? L"USB cable" : L"2.4 GHz receiver";
+        s.linkKind = p.pid == 0x11CA ? LinkKind::UsbCable : LinkKind::UsbReceiver;
         s.connected = data[1] == 1;
         if (s.connected && port.Command(0x00, 0x03, data)) {
-            s.percent = Clamp100(data[1] & 0x7F);
+            s.percent = (data[1] & 0x7F) <= 100 ? (data[1] & 0x7F) : -1;
             s.charging = (data[1] & 0x80) != 0;
         }
-        ctx.Add(s, 0x373B, p.pid);
+        ctx.Add(s, 0x373B, p.pid, &p.source);
     }
 }

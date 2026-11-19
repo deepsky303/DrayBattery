@@ -65,6 +65,7 @@ void PollRapoo(PollContext& ctx) {
                  return c.page() == 0xFF00 && c.usage() == 0x0002 &&
                         (c.inLen() == 19 || (c.inLen() == 7 && IsLegacyVT3Pro(pid)));
              })) {
+            if (ctx.SourceHandled(*c)) continue;
             HidDev d;
             if (!d.Open(*c)) continue;
             Rapoo::Battery battery;
@@ -78,35 +79,27 @@ void PollRapoo(PollContext& ctx) {
             s.name = model ? model->name : HidProduct(*c);
             if (s.name.empty() || s.name == L"Rapoo Gaming Device") s.name = L"Rapoo wireless mouse";
             s.kind = DeviceKind::Mouse;
-            if (battery.connection == Rapoo::Connection::Cable ||
-                (battery.connection == Rapoo::Connection::Unknown && model && pid == model->cable))
+            // The legacy frame has no transport field. Its two explicitly supported
+            // protocol endpoints are the documented cable/receiver pair, not a rule
+            // for unknown PIDs or a claim that both belong to the same mouse.
+            auto connection = battery.connection;
+            if (profile == Rapoo::Profile::LegacyVT3Pro)
+                connection = pid == 0x4415 ? Rapoo::Connection::Cable : Rapoo::Connection::Receiver;
+            if (connection == Rapoo::Connection::Cable) {
                 s.via = L"USB cable";
-            else if (battery.connection == Rapoo::Connection::Bluetooth)
+                s.linkKind = LinkKind::UsbCable;
+            } else if (connection == Rapoo::Connection::Bluetooth) {
                 s.via = L"Bluetooth";
-            else
+            } else if (connection == Rapoo::Connection::Receiver) {
                 s.via = L"2.4 GHz receiver";
+                s.linkKind = LinkKind::UsbReceiver;
+            } else {
+                s.via = L"USB / radio (unverified transport)";
+            }
             s.percent = battery.percent;
             s.charging = battery.charging;
-            s.graceSec = 1800;  // existing UI keeps the last reading, dimmed, while the mouse sleeps
 
-            // A charging mouse can report through both cable and receiver. Keep a single entry,
-            // preferring the cable's state but keeping any available percentage. Claim both
-            // products before generic fallbacks.
-            auto existing = std::find_if(ctx.out.begin(), ctx.out.end(), [&](const DeviceStatus& other) {
-                return other.key == s.key;
-            });
-            if (existing == ctx.out.end()) ctx.Add(s, vid, pid);
-            else {
-                if (s.via == L"USB cable") {
-                    int receiverPercent = existing->percent;
-                    *existing = s;
-                    if (existing->percent < 0) existing->percent = receiverPercent;
-                } else if (existing->percent < 0 && s.percent >= 0) {
-                    existing->percent = s.percent;
-                }
-                ctx.Claim(vid, pid);
-            }
-            break;
+            ctx.Add(s, vid, pid, c);
         }
     }
 }

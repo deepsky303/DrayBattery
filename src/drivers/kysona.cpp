@@ -46,7 +46,6 @@ std::wstring CleanName(std::wstring n, USHORT vid, USHORT pid) {
 }  // namespace
 
 void PollKysona(PollContext& ctx) {
-    std::vector<std::wstring> seenNames;
     for (USHORT vendor : { (USHORT)0x3554, (USHORT)0x373B, (USHORT)0x3770, (USHORT)0x33E4, (USHORT)0x3710 }) {
         for (auto [vid, pid] : ctx.Products(vendor)) {
             // Kysona exposes a dedicated 17-byte collection; ATK / VXE receivers put report 08 in a
@@ -55,6 +54,7 @@ void PollKysona(PollContext& ctx) {
             for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) {
                      return (c.outLen() == 17 && c.inLen() == 17) || (c.page() >= 0xFF00 && c.outLen() >= 17 && c.inLen() >= 17);
                  })) {
+                if (ctx.SourceHandled(*c)) continue;
                 HidDev d;
                 if (!d.Open(*c)) continue;
                 std::vector<BYTE> r;
@@ -77,18 +77,13 @@ void PollKysona(PollContext& ctx) {
                 s.kind = KindFromCollections(ctx.colls, vid, pid);
                 if (s.kind == DeviceKind::Other) s.kind = DeviceKind::Mouse;
                 s.via = (vid == 0x33E4 && GWolvesIsCable(pid)) ? L"USB cable" : L"2.4 GHz receiver";
-                // A mouse plugged in for charging can show up twice (cable + dongle); keep one.
-                bool dup = false;
-                for (auto& n : seenNames) dup |= n == s.name;
-                if (dup) {
-                    ctx.Claim(vid, pid);
-                    for (auto& o : ctx.out)
-                        if (o.name == s.name && s.charging) o.charging = true;
-                } else {
-                    seenNames.push_back(s.name);
-                    ctx.Add(s, vid, pid);
-                }
-                break;
+                // Status/battery requests are shared by direct USB and radio
+                // endpoints. A successful reply alone does not identify a dongle.
+                s.linkKind = (vid == 0x33E4 && GWolvesIsCable(pid)) ? LinkKind::UsbCable : LinkKind::Unknown;
+                if (s.linkKind == LinkKind::Unknown && !c->receiverEvidence)
+                    s.via = L"USB / radio (unverified transport)";
+                ctx.Add(s, vid, pid, c);
+
             }
         }
     }

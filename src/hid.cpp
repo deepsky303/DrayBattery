@@ -1,4 +1,5 @@
 #include "hid.h"
+#include "bluetooth_presence.h"
 
 #include <setupapi.h>
 #include <cfgmgr32.h>
@@ -8,6 +9,79 @@
 #include <cstdio>
 #include <cstring>
 #include <cwctype>
+
+namespace {
+bool ReceiverDescription(DEVINST node) {
+    for (const auto* key : {&DEVPKEY_Device_FriendlyName, &DEVPKEY_Device_DeviceDesc,
+                            &DEVPKEY_Device_BusReportedDeviceDesc}) {
+        wchar_t text[512]{};
+        ULONG bytes = sizeof(text) - sizeof(wchar_t);
+        DEVPROPTYPE type = 0;
+        if (CM_Get_DevNode_PropertyW(node, key, &type, (PBYTE)text, &bytes, 0) != CR_SUCCESS ||
+            type != DEVPROP_TYPE_STRING) continue;
+        const auto name = draybattery::LowerId(text);
+        for (const auto* word : {L"receiver", L"dongle"}) {
+            const auto pos = name.find(word);
+            const auto end = pos + wcslen(word);
+            if (pos != std::wstring::npos && (!pos || !std::iswalnum(name[pos - 1])) &&
+                (end == name.size() || !std::iswalnum(name[end]))) return true;
+        }
+    }
+    return false;
+}
+}
+
+void PopulatePhysicalLink(HidColl& c, DEVINST node) {
+    bool bluetooth = false;
+    std::wstring peripheralContainer;
+    for (int depth = 0; depth < 24; ++depth) {
+        wchar_t id[MAX_DEVICE_ID_LEN]{};
+        if (CM_Get_Device_IDW(node, id, MAX_DEVICE_ID_LEN, 0) != CR_SUCCESS) break;
+        std::wstring normalized = id;
+        for (auto& ch : normalized) ch = (wchar_t)towlower(ch);
+        c.instanceIds.push_back(normalized);
+        bluetooth |= normalized.rfind(L"bth", 0) == 0;
+        if (draybattery::BluetoothPeripheralRoot(normalized)) {
+            GUID container{};
+            DEVPROPTYPE type = 0;
+            ULONG bytes = sizeof(container);
+            if (CM_Get_DevNode_PropertyW(node, &DEVPKEY_Device_ContainerId, &type,
+                    (PBYTE)&container, &bytes, 0) == CR_SUCCESS && type == DEVPROP_TYPE_GUID && container != GUID_NULL) {
+                wchar_t text[64]{};
+                if (StringFromGUID2(container, text, 64)) peripheralContainer = text;
+            }
+            break;
+        }
+        if (normalized.rfind(L"usb\\vid_", 0) == 0 &&
+            normalized.substr(0, normalized.find(L'\\', 4)).find(L"&mi_") == std::wstring::npos) {
+            if (!bluetooth) {
+                c.connectionId = normalized;
+                c.transport = LinkKind::UsbCable;
+                c.receiverEvidence = ReceiverDescription(node);
+            }
+            break; // never bind a BT peripheral to the host radio's USB parent
+        }
+        DEVINST parent = 0;
+        if (CM_Get_Parent(&parent, node, 0) != CR_SUCCESS) break;
+        node = parent;
+    }
+    if (bluetooth && !peripheralContainer.empty()) {
+        c.containerId = std::move(peripheralContainer);
+        for (auto& ch : c.containerId) ch = (wchar_t)towlower(ch);
+        c.connectionId = L"container:" + c.containerId;
+        c.transport = LinkKind::Bluetooth;
+    }
+}
+
+PhysicalPresence HidPresence(const std::vector<HidColl>& colls, bool complete) {
+    PhysicalPresence p;
+    p.usbComplete = complete;
+    p.observedMs = GetTickCount64();
+    for (const auto& c : colls) if (c.transport == LinkKind::UsbCable && !c.connectionId.empty() &&
+        std::find(p.usbPresent.begin(), p.usbPresent.end(), c.connectionId) == p.usbPresent.end())
+        p.usbPresent.push_back(c.connectionId);
+    return p;
+}
 
 std::vector<HidColl> EnumHid(bool* complete) {
     if (complete) *complete = false;
@@ -31,8 +105,6 @@ std::vector<HidColl> EnumHid(bool* complete) {
         det->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
         SP_DEVINFO_DATA dd{ sizeof(dd) };
         if (!SetupDiGetDeviceInterfaceDetailW(di, &ifd, det, need, nullptr, &dd)) { all = false; continue; }
-        HANDLE h = CreateFileW(det->DevicePath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-        if (h == INVALID_HANDLE_VALUE) { all = false; continue; }
         HidColl c;
         c.path = det->DevicePath;
         GUID container{};
@@ -43,37 +115,18 @@ std::vector<HidColl> EnumHid(bool* complete) {
             if (container != GUID_NULL && StringFromGUID2(container, text, 64))
                 c.containerId = text;
         }
-        DEVINST node = dd.DevInst;
-        for (int depth = 0; depth < 12; ++depth) {
-            wchar_t id[MAX_DEVICE_ID_LEN]{};
-            if (CM_Get_Device_IDW(node, id, MAX_DEVICE_ID_LEN, 0) != CR_SUCCESS) break;
-            std::wstring normalized = id;
-            for (auto& ch : normalized) ch = (wchar_t)towlower(ch);
-            c.instanceIds.push_back(normalized);
-            if (normalized.rfind(L"bth", 0) == 0) {
-                c.connectionId = c.containerId.empty() ? normalized : L"container:" + c.containerId;
-                break; // a Bluetooth adapter is not this peripheral's receiver
-            }
-            if (normalized.rfind(L"usb\\vid_", 0) == 0 &&
-                normalized.substr(0, normalized.find(L'\\', 4)).find(L"&mi_") == std::wstring::npos) {
-                c.connectionId = normalized;
-                break;
-            }
-            DEVINST parent = 0;
-            if (CM_Get_Parent(&parent, node, 0) != CR_SUCCESS) break;
-            node = parent;
-        }
-        if (c.connectionId.empty() && !c.containerId.empty())
-            c.connectionId = L"container:" + c.containerId;
-        if (c.connectionId.empty()) c.connectionId = c.path;
+        PopulatePhysicalLink(c, dd.DevInst);
+        if (c.connectionId.empty()) all = false;
+        HANDLE h = CreateFileW(det->DevicePath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE) { out.push_back(std::move(c)); continue; }
         HIDD_ATTRIBUTES a{ sizeof(a) };
         if (HidD_GetAttributes(h, &a)) { c.vid = a.VendorID; c.pid = a.ProductID; }
-        else all = false;
+
         PHIDP_PREPARSED_DATA pp;
         if (HidD_GetPreparsedData(h, &pp)) {
-            if (HidP_GetCaps(pp, &c.caps) != HIDP_STATUS_SUCCESS) all = false;
+            HidP_GetCaps(pp, &c.caps);
             HidD_FreePreparsedData(pp);
-        } else all = false;
+        }
         CloseHandle(h);
         std::wstring lower = c.path;
         for (auto& ch : lower) ch = towlower(ch);

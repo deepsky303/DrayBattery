@@ -20,6 +20,7 @@ DeviceStatus Headset(USHORT pid, const wchar_t* name) {
     s.name = name;
     s.kind = DeviceKind::Headset;
     s.via = L"2.4 GHz receiver";
+    s.linkKind = LinkKind::UsbReceiver;
     return s;
 }
 
@@ -116,6 +117,7 @@ DeviceStatus Mouse(USHORT pid, const wchar_t* name, bool wired) {
     s.name = name;
     s.kind = DeviceKind::Mouse;
     s.via = wired ? L"USB cable" : L"2.4 GHz receiver";
+    s.linkKind = wired ? LinkKind::UsbCable : LinkKind::UsbReceiver;
     return s;
 }
 
@@ -162,6 +164,7 @@ bool RivalPro(HidDev& d, USHORT pid, DeviceStatus& s) {
     if (r[2] > 100) return false;
     s = Mouse(pid, L"SteelSeries Rival Pro", false);
     s.via = L"UWB base station";
+    s.linkKind = LinkKind::UsbReceiver;
     s.percent = r[2];
     return true;
 }
@@ -201,9 +204,10 @@ void PollSteelSeries(PollContext& ctx) {
         for (const auto& m : kModels) {
             if (!In(pid, m.pids)) continue;
             for (const HidColl* c : ctx.Find(vid, pid, m.accept)) {
+                if (ctx.SourceHandled(*c)) continue;
                 HidDev d;
                 DeviceStatus s;
-                if (d.Open(*c) && m.poll(d, pid, s)) { ctx.Add(s, vid, pid); break; }
+                if (d.Open(*c) && m.poll(d, pid, s)) { ctx.Add(s, vid, pid, c); }
             }
             break;
         }

@@ -36,6 +36,10 @@ inline std::wstring LogicalKey(const DeviceStatus& s) {
 
 inline int SourcePriority(const DeviceStatus& s) {
     int score = s.connected ? 1000 : 0;
+    if (s.batteryFresh && !s.batteryCached && s.lastLiveMs) score += 2000;
+    // A usable Windows property can seed a DIM entry. An undated generic/vendor
+    // cache cannot, and must not mask that property before lifecycle validation.
+    if (s.windowsBatteryProperty && s.batteryCached && s.percent >= 0 && s.percent <= 100) score += 600;
     score += s.asleep ? 0 : 400;
     score += s.charging ? 100 : 0;
     score += (s.percent >= 0 && !s.approximate) ? 50 : 0;
@@ -47,7 +51,7 @@ inline int SourcePriority(const DeviceStatus& s) {
 inline bool SamePhysicalDevice(const DeviceStatus& a, const DeviceStatus& b) {
     if (!a.physicalId.empty() && !b.physicalId.empty())
         return a.physicalId == b.physicalId;
-    if (a.key == b.key) return true;
+    if (a.key == b.key) return a.connectionId.empty() || b.connectionId.empty() || a.connectionId == b.connectionId;
     if (a.kind != b.kind || CanonicalModelName(a.name) != CanonicalModelName(b.name)) return false;
     if (a.connectionId.empty() || a.connectionId != b.connectionId) return false;
     auto aliases = [](const DeviceStatus& s) {

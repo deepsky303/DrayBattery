@@ -65,6 +65,9 @@ void PollSteamController(PollContext& ctx) {
             status.name = L"Steam Controller";
         status.kind = DeviceKind::Gamepad;
         status.via = transport;
-        ctx.Add(status, c.vid, c.pid);
+        // Explicit endpoints of the Steam receiver protocol; never inferred from a name.
+        if (c.pid == 0x1142 || c.pid == 0x1304 || c.pid == 0x1305) status.linkKind = LinkKind::UsbReceiver;
+        else if (c.pid == 0x1302) status.linkKind = LinkKind::UsbCable;
+        ctx.Add(status, c.vid, c.pid, &c);
     }
 }

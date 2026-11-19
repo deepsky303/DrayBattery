@@ -244,7 +244,6 @@ void PollLogitech(PollContext& ctx) {
             s.sourceKeys = {s.key};
             s.name = (idx == 0xFF && !product.empty()) ? product : L"Logitech wireless device";
             s.via = idx == 0xFF ? L"USB / Bluetooth" : L"Logitech receiver";
-            s.graceSec = idx == 0xFF ? 0 : (int)(draybattery::kReceiverDisplayTtlMs / 1000);
             s.kind = GuessKind(s.name);
 
             int r = h.Request(idx, 0x00, 0x10 | kSwId, { 0, 0, 0x5A }, p, err, false, 400);
@@ -259,7 +258,7 @@ void PollLogitech(PollContext& ctx) {
             if (found) {
                 if (s.percent >= 0) s.lastLiveMs = GetTickCount64();
                 if (s.kind == DeviceKind::Other) s.kind = GuessKind(s.name);
-                ctx.out.push_back(s);
+                ctx.Add(s, vid, pid, longs.empty() ? shorts[0] : longs[0]);
                 any = true;
             }
         }

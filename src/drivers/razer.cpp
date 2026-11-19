@@ -7,6 +7,7 @@
 // Different models expect different transaction ids, so the known ones are tried in turn.
 // Reference: github.com/openrazer/openrazer (protocol documentation in its driver sources).
 #include "drivers.h"
+#include "../bluetooth_presence.h"
 
 namespace {
 
@@ -50,9 +51,9 @@ std::wstring CleanName(std::wstring n) {
 }  // namespace
 
 void PollRazer(PollContext& ctx) {
-    std::vector<std::wstring> seenNames;
     for (auto [vid, pid] : ctx.Products(0x1532)) {
         for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) { return c.featLen() == 91; })) {
+            if (ctx.SourceHandled(*c)) continue;
             HidDev d;
             if (!d.OpenFeatureOnly(*c)) continue;
             Rz res = Rz::NoReply;
@@ -72,7 +73,8 @@ void PollRazer(PollContext& ctx) {
             s.name = CleanName(HidProduct(*c));
             s.kind = KindFromCollections(ctx.colls, vid, pid);
             if (s.kind == DeviceKind::Other) s.kind = GuessKind(s.name);
-            s.via = L"Razer receiver";
+            s.linkKind = c->receiverEvidence ? LinkKind::UsbReceiver : LinkKind::Unknown;
+            s.via = c->receiverEvidence ? L"Razer receiver" : L"USB / Bluetooth";
             if (res == Rz::Offline) {
                 s.connected = false;
             } else {
@@ -80,18 +82,8 @@ void PollRazer(PollContext& ctx) {
                 std::vector<BYTE> ch;
                 if (Command(d, tid, 0x07, 0x84, 0x02, ch) == Rz::Ok) s.charging = ch[1] == 1;
             }
-            // A wireless mouse plugged in for charging shows up twice (cable + dongle); keep one.
-            bool dup = false;
-            for (auto& n : seenNames) dup |= n == s.name;
-            if (!dup) {
-                seenNames.push_back(s.name);
-                ctx.Add(s, vid, pid);
-            } else {
-                ctx.Claim(vid, pid);
-                for (auto& o : ctx.out)
-                    if (o.name == s.name && s.charging) o.charging = true;
-            }
-            break;
+            ctx.Add(s, vid, pid, c);
+
         }
     }
 }

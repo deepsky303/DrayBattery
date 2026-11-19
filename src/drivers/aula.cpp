@@ -45,6 +45,7 @@ void PollAula(PollContext& ctx) {
         for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) {
                  return c.page() == 0xFF02 && c.usage() == 0x0002 && c.outLen() >= 20 && c.inLen() >= 20;
              })) {
+            if (ctx.SourceHandled(*c)) continue;
             HidDev d;
             if (!d.Open(*c)) continue;
             std::vector<BYTE> r;
@@ -57,10 +58,10 @@ void PollAula(PollContext& ctx) {
             s.name = L"AULA wireless keyboard";
             s.kind = DeviceKind::Keyboard;
             s.via = L"2.4 GHz receiver";
+            s.linkKind = LinkKind::UsbReceiver; // dedicated receiver status channel
             s.percent = level;
             s.charging = r[6] == 0x10;
-            ctx.Add(s, vid, pid);
-            break;
+            ctx.Add(s, vid, pid, c);
         }
     }
 }

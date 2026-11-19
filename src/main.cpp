@@ -19,6 +19,7 @@
 #include "device_db.h"
 #include "logical_identity.h"
 #include "battery_lifecycle.h"
+#include "battery_view.h"
 #include "lifecycle.h"
 #include "widget.h"
 #include "palette.h"
@@ -52,7 +53,7 @@ const wchar_t* kSettingsKey = L"Software\\DrayBattery";
 
 HINSTANCE g_inst;
 HWND g_hwnd;
-HANDLE g_refreshEvt, g_stopEvt, g_worker;
+HANDLE g_refreshEvt, g_stopEvt, g_worker, g_presenceWorker;
 std::atomic<unsigned> g_deviceGeneration{0};
 std::atomic<bool> g_stopping{false};
 std::atomic<ULONGLONG> g_workerProgress{0};
@@ -117,8 +118,6 @@ void SaveHidden() {
     if (g_hidden.empty()) multi.push_back(L'\0');  // REG_MULTI_SZ requires two nulls when empty
     RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, L"HiddenDevices", REG_MULTI_SZ, multi.data(), (DWORD)(multi.size() * sizeof(wchar_t)));
 }
-
-bool IsHidden(const std::wstring& key) { return g_hidden.count(key) != 0; }
 
 bool LoadWidgetMode() {
     DWORD v = 1, sz = sizeof(v);
@@ -267,8 +266,8 @@ HICON IconFor(int pct, bool charging, bool dim, DeviceKind kind, const std::wstr
     const Rgb shade = toRgb(palette::Device(kind));
     const Rgb low = toRgb(palette::LowBattery());
     const Rgb bar = charging ? toRgb(palette::Charging())
-                  : (pct >= 0 && pct <= LOW_BATTERY) ? low : shade;
-    const Rgb text = (!charging && pct >= 0 && pct <= LOW_BATTERY) ? low : shade;
+                  : (!dim && pct >= 0 && pct <= LOW_BATTERY) ? low : shade;
+    const Rgb text = (!dim && !charging && pct >= 0 && pct <= LOW_BATTERY) ? low : shade;
     std::wstring t = !explicitLabel.empty() ? explicitLabel : (pct < 0 ? L"?" : std::to_wstring(pct));
     return RenderIcon(t, pct, text, bar, dim);
 }
@@ -280,20 +279,7 @@ void CopyTip(wchar_t* dst, size_t cap, const std::wstring& s) {
 }
 
 std::wstring StatusText(const TrayEntry& e) {
-    const auto& s = e.st;
-    if (!s.connected) return L"off / not connected";
-    std::wstring t;
-    if (s.asleep && s.percent >= 0)
-        t = (s.levelText.empty() ? std::to_wstring(s.percent) + L"%" : s.levelText)
-            + L" (last known)";
-    else if (!s.levelText.empty() && s.percent >= 0) t = s.levelText;
-    else if (s.percent >= 0) t = std::to_wstring(s.percent) + L"%";
-    else if (e.lastPct >= 0) t = std::to_wstring(e.lastPct) + L"% (last known)";
-    else t = L"unknown";
-    if (s.estimated && s.percent >= 0) t += L" (controller estimate)";
-    if (s.charging) t += L", charging";
-    if (s.asleep) t += L", asleep";
-    return t;
+    return draybattery::BatteryStatusText(e.st, e.lastPct);
 }
 
 bool TrayCall(DWORD msg, UINT uid, HICON icon, const std::wstring& tip, const wchar_t* infoTitle = nullptr,
@@ -348,8 +334,7 @@ void UpdatePlaceholder() {
 void ApplyEntry(TrayEntry& e) {
     if (g_stopping.load()) return;
     const auto& s = e.st;
-    bool visible = s.connected && !g_useWidget && !IsHidden(s.key) &&
-        (!s.receiverBacked || draybattery::WithinReceiverDisplayTtl(s.lastLiveMs, GetTickCount64()));
+    bool visible = !g_useWidget && draybattery::VisibleBattery(s, g_hidden);
     if (!visible) {
         if (e.added) { TrayDelete(e.uid); e.added = false; }
         return;
@@ -369,7 +354,7 @@ void ApplyEntry(TrayEntry& e) {
     std::wstring info;
     bool coarseLow = s.approximate && (s.levelText == L"Low" || s.levelText == L"Empty");
     if (s.charging || (s.approximate ? !coarseLow : shown > LOW_BATTERY + 10)) e.lowWarned = false;
-    if (!s.charging && !s.asleep && s.percent >= 0 && (s.percent <= LOW_BATTERY || coarseLow) && !e.lowWarned) {
+    if (draybattery::LowBattery(s) && !e.lowWarned) {
         e.lowWarned = true;
         infoTitle = L"Low battery";
         info = s.name + L": " + (s.approximate ? s.levelText : std::to_wstring(s.percent) + L"%");
@@ -393,8 +378,7 @@ void UpdateWidget() {
     if (!g_useWidget) return;
     std::vector<const TrayEntry*> list;
     for (auto& [k, e] : g_entries)
-        if (e.st.connected && !IsHidden(k) && (!e.st.receiverBacked ||
-            draybattery::WithinReceiverDisplayTtl(e.st.lastLiveMs, GetTickCount64()))) list.push_back(&e);
+        if (draybattery::VisibleBattery(e.st, g_hidden)) list.push_back(&e);
     std::sort(list.begin(), list.end(), [](const TrayEntry* a, const TrayEntry* b) {
         int ka = KindOrder(a->st.kind), kb = KindOrder(b->st.kind);
         return ka != kb ? ka < kb : a->st.name < b->st.name;
@@ -406,11 +390,10 @@ void UpdateWidget() {
         it.kind = e->st.kind;
         it.percent = e->st.percent >= 0 ? e->st.percent : e->lastPct;
         if (e->st.percent >= 0) it.text = e->st.levelText;
-        it.charging = e->st.charging;
-        it.dim = e->st.asleep || e->st.percent < 0;
-        it.low = !it.charging && it.percent >= 0 &&
-                 (it.percent <= LOW_BATTERY || (e->st.approximate && (e->st.levelText == L"Low" || e->st.levelText == L"Empty")));
-        it.bluetooth = e->st.via == L"Bluetooth";
+        it.charging = draybattery::ChargingBattery(e->st);
+        it.dim = draybattery::DimmedBattery(e->st);
+        it.low = draybattery::LowBattery(e->st);
+        it.bluetooth = e->st.linkKind == LinkKind::Bluetooth;
         items.push_back(it);
         if (!tip.empty()) tip += L"\n";
         tip += e->st.name + L": " + StatusText(*e);
@@ -459,7 +442,7 @@ void RemoveAbsentReceivers() {
             absent.insert(id);
     }
     bool changed = false;
-    for (const auto& id : absent) changed |= g_batteries.RemoveConnection(id);
+    for (const auto& id : absent) changed |= g_batteries.RemoveConnection(id, GetTickCount64());
     if (changed) SyncBatteryView();
 }
 
@@ -577,7 +560,7 @@ void ShowMenu() {
     else AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Click a device to show or hide it");
     for (auto& [k, e] : g_entries) {
         std::wstring line = e.st.name + L":  " + StatusText(e) + L"   [" + e.st.via + L"]";
-        AppendMenuW(m, MF_STRING | (IsHidden(k) ? 0 : MF_CHECKED), ID_DEVICE_FIRST + (UINT)keys.size(), line.c_str());
+        AppendMenuW(m, MF_STRING | (draybattery::HiddenBattery(e.st, g_hidden) ? 0 : MF_CHECKED), ID_DEVICE_FIRST + (UINT)keys.size(), line.c_str());
         keys.push_back(k);
     }
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
@@ -621,9 +604,12 @@ void ShowMenu() {
         default:
             if (cmd >= ID_DEVICE_FIRST && cmd < ID_DEVICE_FIRST + keys.size()) {
                 const std::wstring& key = keys[cmd - ID_DEVICE_FIRST];
-                if (!g_hidden.erase(key)) g_hidden.insert(key);
-                SaveHidden();
                 auto it = g_entries.find(key);
+                if (it != g_entries.end() && draybattery::HiddenBattery(it->second.st, g_hidden)) {
+                    g_hidden.erase(key);
+                    for (const auto& alias : it->second.st.sourceKeys) g_hidden.erase(alias);
+                } else g_hidden.insert(key);
+                SaveHidden();
                 if (it != g_entries.end()) ApplyEntry(it->second);
                 UpdatePlaceholder();
                 UpdateWidget();
@@ -672,11 +658,27 @@ void TracePoll(const std::vector<DeviceStatus>& statuses, bool missing, unsigned
     }
 }
 
+// Independent OS-only inventory checks continue even while a vendor battery query waits.
+// No HID reports, pairing, adapter control, registry writes or device wake requests.
+DWORD WINAPI PresenceWorker(LPVOID) {
+    while (!g_stopping.load()) {
+        try {
+            auto poll = std::make_unique<DevicePoll>();
+            poll->complete = false;
+            poll->generation = g_deviceGeneration.load();
+            poll->presence = EnumBluetoothPresence(); // also enumerates exact present USB ancestors
+            if (!g_stopping.load() && PostMessageW(g_hwnd, WM_RESULTS, 0, (LPARAM)poll.get())) poll.release();
+        } catch (...) { /* Missing verification dims as unverified; it cannot prove removal. */ }
+        if (WaitForSingleObject(g_stopEvt, 2000) != WAIT_TIMEOUT) break;
+    }
+    return 0;
+}
+
 DWORD WINAPI Worker(LPVOID) {
     unsigned fullPolls = 0, missingPolls = 0;
     ULONGLONG nextFull = 0, nextHub = 0, nextRetry = 0;
     std::vector<HidColl> inventory;
-    std::vector<std::wstring> present;
+    std::vector<std::wstring> logitechLinks;
     draybattery::LogitechPollTargets targets;
     auto& hubLinks = targets.ghub;
     auto& retryLinks = targets.retry;
@@ -691,11 +693,11 @@ DWORD WINAPI Worker(LPVOID) {
             if (now >= nextFull || poll->generation != inventoryGeneration) {
                 PollAllDevices(ctx, g_stopEvt);
                 inventory = ctx.colls;
-                present = draybattery::logitech::Connections(inventory);
+                logitechLinks = draybattery::logitech::Connections(inventory);
                 inventoryGeneration = poll->generation;
                 hubLinks.clear();
                 retryLinks.clear();
-                targets.Observe(ctx.out, present);
+                targets.Observe(ctx.out, logitechLinks);
                 nextFull = GetTickCount64() + draybattery::PollIntervalMs(std::min(fullPolls, 4u));
                 if (fullPolls < 4) ++fullPolls;
             } else {
@@ -727,8 +729,10 @@ DWORD WINAPI Worker(LPVOID) {
                 nextRetry = finished + draybattery::MissingReceiverRetryMs(missingPolls);
             }
             poll->devices = std::move(ctx.out);
-            poll->presentConnections = present;
-            poll->inventoryComplete = ctx.inventoryComplete;
+            if (poll->complete) {
+                poll->presence = std::move(ctx.presence);
+                poll->presence.usbComplete &= ctx.inventoryComplete;
+            }
             g_workerProgress.store(finished);
             TracePoll(poll->devices, !retryLinks.empty(), missingPolls,
                       (DWORD)draybattery::MissingReceiverRetryMs(missingPolls));
@@ -796,7 +800,18 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DEVICECHANGE:
             if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
                 ++g_deviceGeneration;
-                if (wp == DBT_DEVICEREMOVECOMPLETE) RemoveAbsentReceivers();
+                if (wp == DBT_DEVICEREMOVECOMPLETE) {
+                    // The whole USB-device removal event remains definitive even if the
+                    // same socket has already re-enumerated before this message is handled.
+                    const auto* hdr = reinterpret_cast<const DEV_BROADCAST_HDR*>(lp);
+                    if (hdr && hdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE &&
+                        hdr->dbch_size >= sizeof(DEV_BROADCAST_DEVICEINTERFACE_W)) {
+                        const auto* removed = reinterpret_cast<const DEV_BROADCAST_DEVICEINTERFACE_W*>(lp);
+                        const auto id = draybattery::UsbRemovalConnectionId(removed->dbcc_name);
+                        if (!id.empty() && g_batteries.RemoveConnection(id, GetTickCount64())) SyncBatteryView();
+                    }
+                    RemoveAbsentReceivers();
+                }
                 RefreshSoon(2500);
             }
             return TRUE;
@@ -838,7 +853,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 // `DrayBattery.exe --list` prints what it finds, `--dump` every HID collection.
-int ListToConsole(bool dump, bool identify = false, bool info = false, bool update = false) {
+int ListToConsole(bool dump, bool identify = false, bool info = false, bool update = false, bool ghubOnly = false) {
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     if (!out || out == INVALID_HANDLE_VALUE) {
         if (AttachConsole(ATTACH_PARENT_PROCESS)) out = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -862,18 +877,19 @@ int ListToConsole(bool dump, bool identify = false, bool info = false, bool upda
         write(DumpHidCollections());
         return 0;
     }
-    auto list = PollAllDevices();
+    std::vector<DeviceStatus> list;
+    if (ghubOnly) {
+        // Read-only acceptance path: metadata enumeration + localhost G HUB GETs.
+        // No vendor/HID battery commands, input reports, serial or XInput calls.
+        PollContext ctx;
+        ctx.colls = EnumHid(&ctx.inventoryComplete);
+        PollGHub(ctx);
+        list = draybattery::MergeLogicalDevices(ctx.out);
+    } else list = PollAllDevices();
     if (list.empty()) write(L"No devices with battery info found.\n");
     for (auto& s : list) {
         std::wstring line = s.name + L"  [" + s.via + L"]  ";
-        if (!s.connected) line += L"off / not connected";
-        else if (s.asleep) line += s.percent >= 0 ?
-            (s.levelText.empty() ? std::to_wstring(s.percent) + L"%" : s.levelText)
-            + L" (last known, asleep)" : L"asleep";
-        else if (!s.levelText.empty()) line += s.levelText;
-        else if (s.percent >= 0) line += std::to_wstring(s.percent) + L"%";
-        else line += L"unknown";
-        if (s.charging) line += L", charging";
+        line += draybattery::BatteryStatusText(s);
         if (s.millivolts) line += L", " + std::to_wstring(s.millivolts) + L" mV";
         write(line + L"   (" + s.key + L")\n");
     }
@@ -908,7 +924,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     }
     if (cmdLine && wcsstr(cmdLine, L"--db-info")) return ListToConsole(false,false,true);
     if (cmdLine && wcsstr(cmdLine, L"--identify")) return ListToConsole(false,true);
-    if (cmdLine && wcsstr(cmdLine, L"--list")) return ListToConsole(false);
+    if (cmdLine && wcsstr(cmdLine, L"--list"))
+        return ListToConsole(false,false,false,false,wcsstr(cmdLine,L"--ghub-only") != nullptr);
     if (cmdLine && wcsstr(cmdLine, L"--dump")) return ListToConsole(true);
     if (cmdLine && wcsstr(cmdLine, L"--quit")) {  // used by the installer before upgrading/uninstalling
         if (HWND w = FindWindowW(L"DrayBatteryWnd", nullptr)) {
@@ -947,7 +964,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     DEV_BROADCAST_DEVICEINTERFACE_W filter{ sizeof(filter) };
     filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
     filter.dbcc_classguid = GUID_DEVINTERFACE_HID;
-    HDEVNOTIFY notify = RegisterDeviceNotificationW(g_hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+    HDEVNOTIFY notify = RegisterDeviceNotificationW(g_hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE | DEVICE_NOTIFY_ALL_INTERFACE_CLASSES);
     if (!notify) LogDrayLifecycleCode(L"DEVICE_NOTIFY_FAILED", GetLastError());
 
     g_refreshEvt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -973,7 +990,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     } else {
         g_workerProgress.store(GetTickCount64());
         g_worker = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
-        if (!g_worker) {
+        g_presenceWorker = CreateThread(nullptr, 0, PresenceWorker, nullptr, 0, nullptr);
+        if (!g_worker || !g_presenceWorker) {
             LogDrayLifecycleCode(L"START_FAILED(worker)", GetLastError());
             exitCode = 1;
             DestroyWindow(g_hwnd);
@@ -1001,6 +1019,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
             WaitForSingleObject(g_worker, INFINITE);
         }
         CloseHandle(g_worker);
+    }
+    if (g_presenceWorker) {
+        WaitForSingleObject(g_presenceWorker, INFINITE);
+        CloseHandle(g_presenceWorker);
     }
     // drain results posted after shutdown started
     while (PeekMessageW(&m, nullptr, WM_RESULTS, WM_RESULTS, PM_REMOVE)) delete reinterpret_cast<DevicePoll*>(m.lParam);

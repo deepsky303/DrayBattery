@@ -10,7 +10,6 @@
 namespace {
 const wchar_t* const kRegistry = L"Software\\DrayBattery\\WolverineXbox";
 constexpr DWORD kVersion = 1;
-constexpr unsigned long long kDay100ns = 24ull*60*60*10000000ull;
 struct Cache {
     DWORD version = kVersion;
     DWORD raw = 0;
@@ -26,17 +25,7 @@ ULONGLONG Now() {
     v.HighPart = ft.dwHighDateTime;
     return v.QuadPart;
 }
-bool Load(Cache& result) {
-    DWORD type=0,size=sizeof(result);
-    if(RegGetValueW(HKEY_CURRENT_USER,kRegistry,L"Battery",
-         RRF_RT_REG_BINARY,&type,&result,&size)!=ERROR_SUCCESS ||
-         type!=REG_BINARY || size!=sizeof(result)) return false;
-    ULONGLONG now=Now();
-    return result.version==kVersion && result.raw<=255 &&
-           result.charging<=2 && result.updatedFiletime>0 &&
-           result.updatedFiletime<=now &&
-           now-result.updatedFiletime<=2*kDay100ns;
-}
+
 }
 bool IsWolverineXboxPresent() {
     HDEVINFO devices=SetupDiGetClassDevsW(nullptr,nullptr,nullptr,
@@ -71,29 +60,8 @@ bool SaveWolverineXboxReading(int rawValue, int charging) {
     RegCloseKey(h);
     return result==ERROR_SUCCESS;
 }
-void PollWolverineXbox(PollContext& ctx) {
-    if(!IsWolverineXboxPresent())return;
-    Cache cache{};
-    const bool cached = Load(cache);
-    ULONGLONG now=Now();
-    ULONGLONG age=cached ? (now-cache.updatedFiletime)/10000000ull : 0;
-    DeviceStatus s;
-    s.key=L"wolverine:1532:0A3F";
-    s.physicalId=L"razer:wolverine-v3pro:primary";
-    s.name=L"Razer Wolverine V3 Pro";
-    s.via=L"Xbox GIP (controller battery estimate)";
-    s.kind=DeviceKind::Gamepad;
-    s.percent=cached ? Clamp100((int)((cache.raw*100+127)/255)) : -1;
-    s.estimated = cached; // normalized controller-reported value; never show a leading ~ glyph
-    // Windows suspends the GIP sink when our reader window loses focus.
-    // Never imply that a stale battery reading is live.
-    s.asleep=cached && age>300;
-    s.connected=true;
-    s.charging=cached && cache.charging!=0 && age<=300;
-    if (!cached) {
-        s.via=L"Xbox GIP (refresh via menu)";
-        s.graceSec=0;
-    }
-    s.graceSec=1800;
-    ctx.Add(s,0x1532,0x0A3F);
+void PollWolverineXbox(PollContext&) {
+    // The legacy registry record is keyed only by model, not by controller instance.
+    // It cannot seed a verified current-session battery or prove which receiver owns it.
+    // The foreground GIP reader remains available; no cached record is polled here.
 }

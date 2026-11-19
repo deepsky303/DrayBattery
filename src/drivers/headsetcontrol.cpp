@@ -230,16 +230,28 @@ DWORD WINAPI RefreshThread(LPVOID) {
 void PollHeadsetControl(PollContext& ctx) {
     if (Command().empty()) return;
     ULONGLONG now = GetTickCount64();
-    if (g_updated == 0) {
+    AcquireSRWLockShared(&g_lock);
+    const auto previousUpdate = g_updated;
+    ReleaseSRWLockShared(&g_lock);
+    if (previousUpdate == 0) {
         Refresh();  // first poll: wait for it, so the first display (and --list) is complete
-    } else if (now - g_updated > 50000 && InterlockedCompareExchange(&g_running, 1, 0) == 0) {
+    } else if (now - previousUpdate > 50000 && InterlockedCompareExchange(&g_running, 1, 0) == 0) {
         HANDLE t = CreateThread(nullptr, 0, RefreshThread, nullptr, 0, nullptr);
         if (t) CloseHandle(t);
         else InterlockedExchange(&g_running, 0);
     }
     AcquireSRWLockShared(&g_lock);
     std::vector<HscDevice> devices = g_devices;
+    const auto acquired = g_updated;
     ReleaseSRWLockShared(&g_lock);
+    static ULONGLONG consumed = 0;
+    const bool fresh = acquired && consumed != acquired;
+    consumed = acquired;
     for (const HscDevice& h : devices)
-        if (!ctx.IsClaimed(h.vid, h.pid)) ctx.Add(h.status, h.vid, h.pid);
+        {
+            auto s = h.status;
+            s.batteryCached = !fresh;
+            s.lastLiveMs = acquired; // preserve the acquisition time, never restamp a cached result
+            if (!ctx.IsClaimed(h.vid, h.pid)) ctx.Add(s, h.vid, h.pid);
+        }
 }

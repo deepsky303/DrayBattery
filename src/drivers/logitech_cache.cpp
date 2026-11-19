@@ -7,7 +7,6 @@ void PollLogitechCache(PollContext& ctx) {
     // Retain the module as a final validation boundary for Logitech observations.
     for (auto& s : ctx.out) {
         if (!s.receiverBacked) continue;
-        s.graceSec = (int)(draybattery::kReceiverDisplayTtlMs / 1000);
         if (s.asleep || !s.connected || !s.lastLiveMs || s.percent < 0 || s.percent > 100) {
             s.percent = -1;
             s.lastLiveMs = 0;

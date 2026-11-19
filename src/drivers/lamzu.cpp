@@ -60,6 +60,7 @@ void PollLamzu(PollContext& ctx) {
     for (USHORT vendor : { (USHORT)0x373E, (USHORT)0x37B0 }) {
         for (auto [vid, pid] : ctx.Products(vendor)) {
             for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) { return c.featLen() == 65; })) {
+                if (ctx.SourceHandled(*c)) continue;
                 HidDev d;
                 if (!d.OpenFeatureOnly(*c)) continue;
                 std::vector<BYTE> req(65, 0);  // [0] = report id 0
@@ -82,11 +83,14 @@ void PollLamzu(PollContext& ctx) {
                 s.kind = DeviceKind::Mouse;
                 bool cable = IsCable(vid, pid);
                 s.via = cable ? L"USB cable" : L"2.4 GHz receiver";
+                // The battery command is shared with cable endpoints; a negative
+                // cable-table lookup is not evidence that an unknown PID is a radio.
+                s.linkKind = cable ? LinkKind::UsbCable : LinkKind::Unknown;
+                if (!cable && !c->receiverEvidence) s.via = L"USB / radio (unverified transport)";
                 s.connected = pct > 0 || cable;  // 0 from a dongle = mouse off or out of range
                 if (pct > 0) s.percent = pct;
                 s.charging = chg == 1;
-                ctx.Add(s, vid, pid);
-                break;
+                ctx.Add(s, vid, pid, c);
             }
         }
     }

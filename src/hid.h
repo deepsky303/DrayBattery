@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <hidsdi.h>
 #include <hidpi.h>
+#include <cfgmgr32.h>
 
 #include <initializer_list>
 #include <string>
@@ -20,6 +21,8 @@ struct HidColl {
     std::wstring path;
     std::wstring connectionId; // USB ancestor instance, or device container for BT
     std::wstring containerId;
+    LinkKind transport = LinkKind::Unknown; // USB topology alone does not prove a receiver
+    bool receiverEvidence = false; // receiver/dongle role named on this exact USB ancestor
     std::vector<std::wstring> instanceIds; // interface + ancestors, for G HUB path matching
     USHORT vid = 0, pid = 0;
     int iface = -1;  // USB interface number (MI_xx in the path), -1 when unknown
@@ -32,6 +35,10 @@ struct HidColl {
 };
 
 std::vector<HidColl> EnumHid(bool* complete = nullptr);
+// Read-only Configuration Manager ancestry. Does not open a HID report channel.
+void PopulatePhysicalLink(HidColl& c, DEVINST node);
+PhysicalPresence HidPresence(const std::vector<HidColl>& colls, bool complete);
+PhysicalPresence EnumBluetoothPresence();
 
 class HidDev {
 public:

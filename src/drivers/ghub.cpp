@@ -252,6 +252,7 @@ void PollGHub(PollContext& ctx) {
         DeviceStatus reading;
         reading.connectionId = link;
         reading.receiverBacked = true;
+        reading.linkKind = LinkKind::UsbReceiver;
         reading.ghub = true;
         reading.key = unitsByLink[link].size() == 1 ? draybattery::logitech::SlotKey(link, 1) :
             L"logi:" + link + L":ghub:" + Widen(identifier->str());
@@ -265,7 +266,6 @@ void PollGHub(PollContext& ctx) {
             deviceSignature->str().size() < 160)
             reading.physicalId = L"logitech:" + Widen(deviceSignature->str());
         reading.via = L"Logitech G HUB (local)";
-        reading.graceSec = (int)(draybattery::kReceiverDisplayTtlMs / 1000);
         draybattery::ghub::ApplyBatteryState(reading, currentState, info, GetTickCount64());
         const auto* kind = device.get("deviceType");
         std::string type = kind ? kind->str() : "";

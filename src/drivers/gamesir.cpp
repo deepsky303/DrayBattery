@@ -24,6 +24,7 @@ void PollGameSir(PollContext& ctx) {
     for (auto [vid, pid] : ctx.Products(kVid)) {
         if (!IsNova(pid)) continue;
         for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) { return c.page() == 0xFF7A && c.outLen() >= 3; })) {
+            if (ctx.SourceHandled(*c)) continue;
             HidDev d;
             if (!d.Open(*c)) continue;
             d.Flush();
@@ -42,10 +43,10 @@ void PollGameSir(PollContext& ctx) {
             s.name = L"GameSir Nova";
             s.kind = DeviceKind::Gamepad;
             s.via = pid == 0x1098 ? L"2.4 GHz receiver" : L"USB cable";
+            s.linkKind = pid == 0x1098 ? LinkKind::UsbReceiver : LinkKind::UsbCable;
             if (r[18] == 0xFF) s.charging = true;  // percent stays -1: the last known value is kept
             else s.percent = r[18];
-            ctx.Add(s, vid, pid);
-            break;
+            ctx.Add(s, vid, pid, c);
         }
     }
 }

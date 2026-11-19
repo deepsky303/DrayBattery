@@ -4,6 +4,17 @@
 #include <cstdint>
 
 enum class DeviceKind { Other, Mouse, Headset, Keyboard, Gamepad };
+enum class LinkKind { Unknown, UsbReceiver, Bluetooth, UsbCable };
+enum class Presence { Unknown, Present, Absent };
+
+// Physical inventory is independent of protocol replies and battery availability.
+// A complete HID inventory proves USB absence, never Bluetooth disconnection.
+struct PhysicalPresence {
+    std::vector<std::wstring> usbPresent;
+    std::vector<std::wstring> btConnected, btDisconnected, btUnknown;
+    bool usbComplete = false, bluetoothComplete = false;
+    std::uint64_t observedMs = 0;
+};
 
 // One battery-powered device, as seen during a single poll.
 struct DeviceStatus {
@@ -17,6 +28,13 @@ struct DeviceStatus {
     std::vector<std::wstring> sourceKeys;
     std::wstring connectionId; // actual USB/BT instance, never just VID/PID/model
     bool receiverBacked = false;
+    LinkKind linkKind = LinkKind::Unknown;
+    bool batteryFresh = false; // successful acquisition, not a cached property/replayed status
+    bool batteryCached = false;
+    bool windowsBatteryProperty = false; // OS-reported level; never a live acquisition
+    std::wstring batteryPropertyId; // exact PnP node that supplied the Windows property
+    std::uint64_t batteryObservedMs = 0; // time we READ the property, not battery measurement time
+    bool presenceUncertain = false;
     bool ghub = false;         // eligible for read-only localhost status refreshes
     std::uint64_t lastLiveMs = 0; // monotonic acquisition time; zero means no live sample
     std::wstring via;          // "2.4 GHz receiver", "Bluetooth", "USB cable", ...
@@ -26,10 +44,9 @@ struct DeviceStatus {
     bool approximate = false; // never present XInput categories as exact battery percentages
     bool estimated = false;   // numeric value is converted from a controller-reported raw level
     bool charging   = false;
-    bool asleep     = false;   // receiver answered but the device is sleeping (keep last value)
+    bool asleep     = false;   // dim last reported value; does not prove hardware sleep
     bool connected  = true;    // false: confirmed disconnect; radio sleep uses asleep
     int  millivolts = 0;       // battery voltage when reported (0 = unknown)
-    int  graceSec   = 0;       // legacy driver grace; receiverBacked uses the central 90s TTL
 };
 
 // Queries every supported device. Blocking (can take a second or two); call from a worker thread.
@@ -38,10 +55,9 @@ std::vector<DeviceStatus> PollAllDevices();
 // Worker -> UI snapshot. Partial snapshots only replace the listed connections.
 struct DevicePoll {
     std::vector<DeviceStatus> devices;
-    std::vector<std::wstring> presentConnections;
+    PhysicalPresence presence;
     std::vector<std::wstring> polledConnections;
     bool complete = true;
-    bool inventoryComplete = true;
     unsigned generation = 0;
 };
 

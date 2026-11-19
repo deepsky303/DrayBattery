@@ -58,9 +58,10 @@ void PollPlayStation(PollContext& ctx) {
         s.name = IsDs4(c.pid) ? L"DualShock 4" : c.pid == 0x0DF2 ? L"DualSense Edge" : L"DualSense";
         s.kind = DeviceKind::Gamepad;
         s.via = bt ? L"Bluetooth" : (c.pid == 0x0BA0 ? L"Wireless adapter" : L"USB cable");
+        s.linkKind = bt ? LinkKind::Unknown : (c.pid == 0x0BA0 ? LinkKind::UsbReceiver : LinkKind::UsbCable);
         s.percent = pct;
         s.charging = charging;
-        ctx.out.push_back(s);
+        ctx.Add(s, c.vid, c.pid, &c);
         ctx.Claim(c.vid, c.pid);
     }
 }

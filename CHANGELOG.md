@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.12
+
+- **Presence-based sleep indicators for all supported physical devices:** keep the last trustworthy battery value dimmed without an age limit while the exact wireless receiver is present or the Bluetooth peripheral itself reports connected. Fresh vendor samples return to normal brightness. A paired device alone is not a connected device.
+- Confirmed physical disconnection removes the indicator immediately, invalidates the old sample, and prevents resurrecting stale values on reconnect; hardware-identity safeguards prevent cross-device contamination.
+- Unverified presence dims the last sample with a clear uncertainty tooltip. Unknown transport type, generic host adapter, and unidentifiable external battery providers do not receive unlimited retention just because a battery percentage exists.
+- Windows Bluetooth battery properties are displayed dimmed and marked as last reported by Windows rather than fresh live measurements. Source priorities prefer live vendor readings, disallow the host adapter as evidence, and handle conflicting Bluetooth Classic/LE states cautiously.
+- Added typed receiver/cable/BT transport roles for supported drivers; 13 MSVC regression test programs pass, including multiple receiver brands, Bluetooth, reconnect and multi-day sleep retention.
+- Real G903/G915 X G HUB reading and Windows taskbar widget recreation smoke tests passed; physical sleep/unplug tests for all vendor devices are not yet complete.
+
 ## 0.1.11
 
 - Restored short dimmed last-known battery indicators for sleeping Logitech G903/G915 devices: 90-second maximum from the most recent verified live measurement. Repeated cached/sleeping messages do not renew the timer. Receiver removal hides the indicator immediately.

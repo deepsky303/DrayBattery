@@ -28,10 +28,11 @@ constexpr BYTE kStatusType = 0x1A;
 struct Model {
     USHORT pid;
     const wchar_t* via;
+    LinkKind role;
 };
-// Cable first: when it is plugged in the keyboard is powered and awake, and the dongle may still be
-// attached too. Only one entry is ever reported for the keyboard.
-constexpr Model kModels[] = { { 0x00E3, L"USB cable" }, { 0x00EA, L"2.4 GHz receiver" } };
+// These protocol endpoints declare their roles; they do not prove cable and dongle are one unit.
+constexpr Model kModels[] = { { 0x00E3, L"USB cable", LinkKind::UsbCable },
+                            { 0x00EA, L"2.4 GHz receiver", LinkKind::UsbReceiver } };
 
 // The one and only frame this driver ever sends.
 std::vector<BYTE> BuildQuery() {
@@ -82,23 +83,24 @@ void PollCherry(PollContext& ctx) {
         for (const HidColl* c : ctx.Find(kVid, m.pid, [](const HidColl& c) {
                  return c.page() == kPage && c.usage() == kUsage && c.inLen() == kLen && c.outLen() == kLen;
              })) {
+            if (ctx.SourceHandled(*c)) continue;
             std::vector<BYTE> reply;
-            if (!Query(*c, reply)) continue;  // keyboard off or asleep: show nothing (last value is kept for a while)
+            if (!Query(*c, reply)) continue;  // no new reading; physical inventory decides retention
 
             DeviceStatus s;
-            s.key = L"cherry:mx30s";  // same entry whichever way the keyboard is connected
+            s.key = L"cherry:mx30s";  // central enrichment appends the exact physical link
             s.name = L"CHERRY MX 3.0S Wireless";
             s.kind = DeviceKind::Keyboard;
             s.via = m.via;
+            s.linkKind = m.role;
             if (reply[8] <= 100) {
                 s.percent = reply[8];
                 s.charging = reply[9] != 0;  // USB powered, i.e. plugged in
             } else {
                 s.asleep = true;  // answered without a usable level
             }
-            s.graceSec = 1800;  // the dongle stops answering while the keyboard sleeps
-            ctx.Add(s, kVid, m.pid);
-            return;
+            ctx.Add(s, kVid, m.pid, c);
+
         }
     }
 }

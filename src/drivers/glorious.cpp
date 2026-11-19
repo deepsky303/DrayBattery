@@ -109,6 +109,7 @@ void PollGlorious(PollContext& ctx) {
     for (const Vendor& v : kVendors) {
         for (auto [vid, pid] : ctx.Products(v.vid)) {
             for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) { return c.featLen() == 65; })) {
+                if (ctx.SourceHandled(*c)) continue;
                 HidDev d;
                 if (!d.OpenFeatureOnly(*c)) continue;
                 std::vector<BYTE> r;
@@ -137,11 +138,14 @@ void PollGlorious(PollContext& ctx) {
                     s.kind = SinowealthKind(ctx.colls, vid, pid, s.name);
                 }
                 s.via = v.isCable(pid) ? L"USB cable" : L"2.4 GHz receiver";
+                // This shared supplier command has no radio/cable flag. Unknown
+                // non-cable endpoints need receiver evidence on their exact PnP node.
+                s.linkKind = v.isCable(pid) ? LinkKind::UsbCable : LinkKind::Unknown;
+                if (!v.isCable(pid) && !c->receiverEvidence) s.via = L"USB / radio (unverified transport)";
                 s.charging = v.isCable(pid) || r[7] == 0x01;
                 if (r[1] == 0xA1 && r[8] <= 100) s.percent = Clamp100(r[8] ? r[8] : 1);
                 else s.asleep = true;
-                ctx.Add(s, vid, pid);
-                break;
+                ctx.Add(s, vid, pid, c);
             }
         }
     }

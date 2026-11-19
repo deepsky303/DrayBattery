@@ -20,6 +20,7 @@ int ZowiePercent(int mv) {
 
 bool PollCw(PollContext& ctx, USHORT pid) {
     for (const HidColl* c : ctx.Find(0x04A5, pid, [](const HidColl& c) { return c.page() >= 0xFF00 && c.outLen() == 65; })) {
+        if (ctx.SourceHandled(*c)) continue;
         HidDev d;
         if (!d.Open(*c)) continue;
         d.Flush();
@@ -33,6 +34,7 @@ bool PollCw(PollContext& ctx, USHORT pid) {
         s.name = L"ZOWIE EC-CW";
         s.kind = DeviceKind::Mouse;
         s.via = pid == 0x8005 ? L"USB cable" : L"2.4 GHz receiver";
+        s.linkKind = pid == 0x8005 ? LinkKind::UsbCable : LinkKind::UsbReceiver;
         s.charging = pid == 0x8005;
         if (mv == 0) {
             s.connected = false;
@@ -40,46 +42,51 @@ bool PollCw(PollContext& ctx, USHORT pid) {
             s.millivolts = mv;
             s.percent = (r[2] >= 1 && r[2] <= 100) ? r[2] : ZowiePercent(mv);
         }
-        ctx.Add(s, 0x04A5, pid);
-        return true;
+        ctx.Add(s, 0x04A5, pid, c);
     }
-    return false;
+    return ctx.IsClaimed(0x04A5, pid);
 }
 
 bool PollDw(PollContext& ctx, USHORT pid) {
     auto cmd = ctx.Find(0x04A5, pid, [](const HidColl& c) { return c.page() == 0xFF03 && c.outLen() == 16; });
     auto rep = ctx.Find(0x04A5, pid, [](const HidColl& c) { return c.page() == 0xFF04 && c.inLen() == 16; });
     if (cmd.empty() || rep.empty()) return false;
-    HidDev in, out;
-    if (!in.Open(*rep[0]) || !out.Open(*cmd[0])) return false;  // open the reply channel first
-    in.Flush();
-    if (!out.Write({ 0x08, 0xB4, 0x15 })) return false;
-    std::vector<BYTE> r;
-    ULONGLONG end = GetTickCount64() + 1500;
-    bool ok = false;
-    while ((LONGLONG)end - (LONGLONG)GetTickCount64() > 0) {
-        int left = (int)((LONGLONG)end - (LONGLONG)GetTickCount64());
-        if (in.Read(r, left) < 5) break;
-        if (r[0] == 0x09) { ok = true; break; }
+    for (const auto* command : cmd) {
+        const HidColl* report = nullptr;
+        for (const auto* candidate : rep) if (!command->connectionId.empty() && candidate->connectionId == command->connectionId) { report = candidate; break; }
+        if (!report) continue;
+        HidDev in, out;
+        if (!in.Open(*report) || !out.Open(*command)) continue;  // open the reply channel first
+        in.Flush();
+        if (!out.Write({ 0x08, 0xB4, 0x15 })) continue;
+        std::vector<BYTE> r;
+        ULONGLONG end = GetTickCount64() + 1500;
+        bool ok = false;
+        while ((LONGLONG)end - (LONGLONG)GetTickCount64() > 0) {
+            int left = (int)((LONGLONG)end - (LONGLONG)GetTickCount64());
+            if (in.Read(r, left) < 5) break;
+            if (r[0] == 0x09) { ok = true; break; }
+        }
+        if (!ok || r[1] == 0xE6 || r[4] != 0xC8) continue;
+        int mv = (r[1] * 256 + r[2]) * 10;
+        bool cable = pid != 0x800A;
+        DeviceStatus s;
+        s.key = L"zowie:" + Hex4(pid);
+        s.name = HidProduct(*command);
+        if (s.name.empty() || s.name.find(L"Receiver") != std::wstring::npos) s.name = L"ZOWIE DW mouse";
+        s.kind = DeviceKind::Mouse;
+        s.via = cable ? L"USB cable" : L"2.4 GHz receiver";
+        s.linkKind = cable ? LinkKind::UsbCable : LinkKind::UsbReceiver;
+        if (mv == 0) {
+            s.connected = false;
+        } else {
+            s.millivolts = mv;
+            s.percent = ZowiePercent(mv);
+            s.charging = cable || mv >= 4250;
+        }
+        ctx.Add(s, 0x04A5, pid, command);
     }
-    if (!ok || r[1] == 0xE6 || r[4] != 0xC8) return false;
-    int mv = (r[1] * 256 + r[2]) * 10;
-    bool cable = pid != 0x800A;
-    DeviceStatus s;
-    s.key = L"zowie:" + Hex4(pid);
-    s.name = HidProduct(*cmd[0]);
-    if (s.name.empty() || s.name.find(L"Receiver") != std::wstring::npos) s.name = L"ZOWIE DW mouse";
-    s.kind = DeviceKind::Mouse;
-    s.via = cable ? L"USB cable" : L"2.4 GHz receiver";
-    if (mv == 0) {
-        s.connected = false;
-    } else {
-        s.millivolts = mv;
-        s.percent = ZowiePercent(mv);
-        s.charging = cable || mv >= 4250;
-    }
-    ctx.Add(s, 0x04A5, pid);
-    return true;
+    return ctx.IsClaimed(0x04A5, pid);
 }
 
 }  // namespace

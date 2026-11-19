@@ -37,7 +37,7 @@ bool Get(HidDev& d, BYTE cls, std::vector<BYTE>& reply) {
 }
 
 struct Cached { ULONGLONG at = 0; DeviceStatus status; bool valid = false; };
-std::map<USHORT, Cached> g_cache;
+std::map<std::wstring, Cached> g_cache;
 
 const wchar_t* Name(USHORT pid) { return (pid == 0x0576 || pid == 0x0577) ? L"Razer BlackShark V3 Pro" : L"Razer BlackShark V3"; }
 
@@ -48,29 +48,35 @@ void PollRazerHeadsets(PollContext& ctx) {
         if (ctx.IsClaimed(0x1532, pid)) continue;
         auto colls = ctx.Find(0x1532, pid, [](const HidColl& c) { return c.iface == 5 && c.outLen() >= 64 && c.inLen() >= 15; });
         if (colls.empty()) continue;
-        Cached& cache = g_cache[pid];
-        if (cache.valid && GetTickCount64() - cache.at < kMinIntervalMs) {
-            ctx.Add(cache.status, 0x1532, pid);
-            continue;
+        for (const auto* source : colls) {
+            Cached& cache = g_cache[source->connectionId.empty() ? source->path : source->connectionId];
+            if (cache.valid && GetTickCount64() - cache.at < kMinIntervalMs) {
+                auto cached = cache.status;
+                cached.batteryCached = true;
+                ctx.Add(cached, 0x1532, pid, source);
+                continue;
+            }
+            HidDev d;
+            if (!d.Open(*source)) continue;
+            // Handshake the headset expects before reads (init, charging state on both links).
+            d.Write(Packet(0x00, 0x02));
+            d.Write(Packet(0x00, 0x2A));
+            d.Write(Packet(0x80, 0x2A));
+            Sleep(250);
+            d.Flush();
+            std::vector<BYTE> r;
+            if (!Get(d, 0x21, r) || r[13] > 100) continue;
+            DeviceStatus s;
+            s.key = L"blackshark:" + Hex4(pid);
+            s.name = Name(pid);
+            s.kind = DeviceKind::Headset;
+            s.via = L"2.4 GHz receiver";
+            s.linkKind = LinkKind::UsbReceiver;
+            s.percent = r[13];
+            s.charging = r[14] != 0;
+            s.lastLiveMs = GetTickCount64();
+            cache = { s.lastLiveMs, s, true };
+            ctx.Add(s, 0x1532, pid, source);
         }
-        HidDev d;
-        if (!d.Open(*colls[0])) continue;
-        // Handshake the headset expects before reads (init, charging state on both links).
-        d.Write(Packet(0x00, 0x02));
-        d.Write(Packet(0x00, 0x2A));
-        d.Write(Packet(0x80, 0x2A));
-        Sleep(250);
-        d.Flush();
-        std::vector<BYTE> r;
-        if (!Get(d, 0x21, r) || r[13] > 100) continue;
-        DeviceStatus s;
-        s.key = L"blackshark:" + Hex4(pid);
-        s.name = Name(pid);
-        s.kind = DeviceKind::Headset;
-        s.via = L"2.4 GHz receiver";
-        s.percent = r[13];
-        s.charging = r[14] != 0;
-        cache = { GetTickCount64(), s, true };
-        ctx.Add(s, 0x1532, pid);
     }
 }

@@ -1,6 +1,6 @@
 #pragma once
-// G HUB state is not a battery reading. NOT_CONNECTED must never be treated as
-// SLEEPING just because G HUB remembers the last percentage.
+// G HUB state is not a battery reading. NOT_CONNECTED cannot create a sample;
+// the lifecycle may retain a prior real sample while the exact receiver is present.
 #include <string_view>
 #include "../devices.h"
 #include "ghub_json.h"
@@ -25,6 +25,7 @@ inline void ApplyBatteryState(DeviceStatus& s, DeviceState state,
     s.percent = -1;
     s.charging = false;
     s.lastLiveMs = 0;
+    s.batteryFresh = false;
     if (!state.connected || state.asleep || !battery) return;
     const auto* removed = battery->get("isBatteryRemoved");
     if (removed && removed->type == ghubjson::Value::Boolean && removed->boolean) return;
@@ -34,6 +35,7 @@ inline void ApplyBatteryState(DeviceStatus& s, DeviceState state,
     s.percent = value;
     s.asleep = false;
     s.lastLiveMs = now;
+    s.batteryFresh = true;
     const auto* charging = battery->get("charging");
     s.charging = charging && charging->type == ghubjson::Value::Boolean && charging->boolean;
 }

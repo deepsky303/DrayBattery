@@ -40,15 +40,17 @@ void PollMotospeed(PollContext& ctx) {
     for (USHORT pid : { (USHORT)0xFFE0, (USHORT)0xFFF2, (USHORT)0xFFF1 }) {
         if (ctx.IsClaimed(0x0BDA, pid)) continue;
         for (const HidColl* c : ctx.Find(0x0BDA, pid, [](const HidColl& c) { return c.iface == 4 && c.outLen() >= 21; })) {
+            if (ctx.SourceHandled(*c)) continue;
             DeviceStatus s;
             s.key = L"motospeed:" + Hex4(pid);
             s.name = L"Motospeed X6";
             s.kind = DeviceKind::Mouse;
             if (pid == 0xFFF1) {  // plugged in: charging, no battery reading over the cable
                 s.via = L"USB cable";
+                s.linkKind = LinkKind::UsbCable;
                 s.charging = true;
-                ctx.Add(s, 0x0BDA, pid);
-                break;
+                ctx.Add(s, 0x0BDA, pid, c);
+                continue; // cable protocol has no battery; never relabel it as a receiver
             }
             HidDev d;
             if (!d.Open(*c)) continue;
@@ -58,10 +60,11 @@ void PollMotospeed(PollContext& ctx) {
             if (!ReadUntil(d, r, 1500, [](const std::vector<BYTE>& r) { return r.size() > 20 && r[0] == 0xB4; })) continue;
             int raw = r[20];
             s.via = L"2.4 GHz receiver";
+            s.linkKind = LinkKind::UsbReceiver;
             s.charging = raw >= 128;
-            s.percent = Clamp100(s.charging ? raw - 128 : raw);
-            ctx.Add(s, 0x0BDA, pid);
-            break;
+            const int percent = s.charging ? raw - 128 : raw;
+            s.percent = percent <= 100 ? percent : -1;
+            ctx.Add(s, 0x0BDA, pid, c);
         }
     }
 }
@@ -92,6 +95,7 @@ void PollXenta(PollContext& ctx) {
     for (USHORT pid : pids) {
         if (ctx.IsClaimed(0x1D57, pid)) continue;
         for (const HidColl* c : ctx.Find(0x1D57, pid, [](const HidColl& c) { return c.page() == 0x000A && c.inLen() >= 5; })) {
+            if (ctx.SourceHandled(*c)) continue;
             present.insert(c->path);
             XentaListener& l = g_xenta[c->path];
             bool fresh = !l.dev;
@@ -113,7 +117,7 @@ void PollXenta(PollContext& ctx) {
                 l.lastFrameAt = GetTickCount64();
                 got++;
             }
-            if (l.last.empty() || GetTickCount64() - l.lastFrameAt > 15000) break;  // mouse off: no frames
+            if (l.last.empty() || GetTickCount64() - l.lastFrameAt > 15000) continue;  // mouse off: no frames
             bool cable = pid == 0xFA55 || pid == 0x2155;
             BYTE code = l.last[1], st = l.last[3], level = l.last[4];
             const XentaModel* model = nullptr;
@@ -124,6 +128,7 @@ void PollXenta(PollContext& ctx) {
             s.name = model ? model->name : L"Wireless mouse";
             s.kind = DeviceKind::Mouse;
             s.via = cable ? L"USB cable" : L"2.4 GHz receiver";
+            s.linkKind = cable ? LinkKind::UsbCable : LinkKind::UsbReceiver;
             bool agreed = l.prev == l.last;
             if (cable || st == 0x02 || st == 0x03) {
                 s.charging = true;  // the level is frozen on external power
@@ -136,18 +141,20 @@ void PollXenta(PollContext& ctx) {
                 }
             }
             if (s.percent < 0 && !s.charging) s.asleep = true;  // shown with the last known value
-            ctx.Add(s, 0x1D57, pid);
-            break;
+            s.lastLiveMs = l.lastFrameAt;
+            s.batteryCached = got == 0;
+            ctx.Add(s, 0x1D57, pid, c);
         }
     }
     for (auto it = g_xenta.begin(); it != g_xenta.end();)  // forget receivers that were unplugged
-        it = present.count(it->first) ? std::next(it) : g_xenta.erase(it);
+        it = present.count(it->first) || !ctx.inventoryComplete ? std::next(it) : g_xenta.erase(it);
 }
 
 void PollAjazz(PollContext& ctx) {
     for (USHORT vendor : { (USHORT)0x249A, (USHORT)0x248A }) {
         for (auto [vid, pid] : ctx.Products(vendor)) {
             for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) { return c.iface == 2 && c.outLen() == 33 && c.inLen() == 33; })) {
+                if (ctx.SourceHandled(*c)) continue;
                 HidDev d;
                 if (!d.Open(*c)) continue;
                 d.Flush();
@@ -168,11 +175,11 @@ void PollAjazz(PollContext& ctx) {
                 s.kind = DeviceKind::Mouse;
                 bool receiver = vid == 0x249A;
                 s.via = receiver ? L"2.4 GHz receiver" : L"USB cable";
+                s.linkKind = receiver ? LinkKind::UsbReceiver : LinkKind::UsbCable;
                 s.connected = !receiver || r[14] != 0;
                 s.charging = r[12] != 0;
                 if (s.connected) s.percent = r[13];
-                ctx.Add(s, vid, pid);
-                break;
+                ctx.Add(s, vid, pid, c);
             }
         }
     }
@@ -183,6 +190,7 @@ void PollAjazzAjSeries(PollContext& ctx) {
         for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) {
                  return c.page() == 0xFFFF && c.usage() == 0x02 && c.featLen() >= 65;
              })) {
+            if (ctx.SourceHandled(*c)) continue;
             HidDev d;
             if (!d.OpenFeatureOnly(*c)) continue;
             std::vector<BYTE> req(c->featLen(), 0);
@@ -201,10 +209,10 @@ void PollAjazzAjSeries(PollContext& ctx) {
             if (s.name.empty()) s.name = L"AJAZZ mouse";
             s.kind = DeviceKind::Mouse;
             s.via = L"2.4 GHz receiver";
+            s.linkKind = LinkKind::UsbReceiver;
             s.connected = pct > 0;  // 0 means the link is up but the mouse is off
             if (s.connected) s.percent = pct;
-            ctx.Add(s, vid, pid);
-            break;
+            ctx.Add(s, vid, pid, c);
         }
     }
 }

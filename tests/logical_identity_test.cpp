@@ -52,20 +52,19 @@ int main(){
     anonymousTwo.key=L"logi:receiver2";
     assert(draybattery::MergeLogicalDevices({anonymous,anonymousTwo}).size()==2);
 
-    // Wolverine's two vendor modes share a physical identity and one icon.
+    // Sources sharing an independently verified unit ID have one icon.
     auto gamePc=Make(L"wolverine:1532:0A4C",L"Razer Wolverine V3 Pro",
-                     L"razer:wolverine-v3pro:primary",DeviceKind::Gamepad,97,false);
+                     L"razer:verified-unit-A",DeviceKind::Gamepad,97,false);
     auto gameXbox=Make(L"wolverine:1532:0A3F",L"Razer Wolverine V3 Pro",
-                       L"razer:wolverine-v3pro:primary",DeviceKind::Gamepad,94,true);
+                       L"razer:verified-unit-A",DeviceKind::Gamepad,94,true);
     auto mergedGame=draybattery::MergeLogicalDevices({gameXbox,gamePc});
     assert(mergedGame.size()==1 && mergedGame[0].percent==97);
-    assert(mergedGame[0].key==L"physical:razer:wolverine-v3pro:primary");
+    assert(mergedGame[0].key==L"physical:razer:verified-unit-A");
     // Cross-poll source transition: 42% from HID++ must not linger next
     // to the active 41% G HUB reading of the same G903 physical device.
     auto oldHid = Make(L"logi:C539:1",L"Logitech G903 LIGHTSPEED",
         nullptr,DeviceKind::Mouse,42,false);
     oldHid.via=L"Logitech receiver";
-    oldHid.graceSec=1800;
     oldHid.sourceKeys={L"logi:C539:1"};
     oldHid.connectionId=L"receiver-A";
     auto newHub=Make(L"physical:logitech:MOUSE.g903_hero.0.1680857627",

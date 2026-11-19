@@ -4,7 +4,7 @@
 //   Request: [46][81][00] -> status report [47][81][model] ... [10] percent, [11] charging (0 = no),
 //            [12] link (0 cable, 1 dongle). The mouse also sends it on its own when the level changes.
 //   [2] tells the models apart on the shared dongle: 50 = MM712; 70 seen in an MM731 status report.
-//   A sleeping or switched-off mouse does not answer; the last value is kept (graceSec).
+//   A sleeping or switched-off mouse does not answer; the session policy retains the verified value while the exact receiver is present.
 // MM712 verified on hardware (2516:01B7). MM731: same protocol family per MM731-Controller; its battery
 // bytes and model byte are not verified.
 // Protocol: github.com/syntactic-spice/coolermaster-usb-protocol (docs/PROTOCOL.md) and
@@ -41,6 +41,7 @@ void PollCoolerMaster(PollContext& ctx) {
     for (auto [vid, pid] : ctx.Products(0x2516)) {  // sorted: the cable ids come before the dongle
         if (pid != kDongle && pid != kMM712Cable && pid != kMM731Cable) continue;
         for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) { return c.iface == 3 && c.page() == 0xFF0A; })) {
+            if (ctx.SourceHandled(*c)) continue;
             HidDev d;
             std::vector<BYTE> r;
             if (!d.Open(*c) || !QueryStatus(d, r)) continue;
@@ -48,20 +49,11 @@ void PollCoolerMaster(PollContext& ctx) {
             s.key = L"coolermaster:" + Hex4(pid);
             s.name = ModelName(pid, r[2]);
             s.kind = DeviceKind::Mouse;
-            s.via = r[12] == 0 ? L"USB cable" : L"2.4 GHz receiver";
+            s.via = r[12] == 0 ? L"USB cable" : r[12] == 1 ? L"2.4 GHz receiver" : L"USB / radio (unverified transport)";
+            s.linkKind = r[12] == 0 ? LinkKind::UsbCable : r[12] == 1 ? LinkKind::UsbReceiver : LinkKind::Unknown;
             if (r[10] >= 1 && r[10] <= 100) s.percent = r[10];
             s.charging = r[11] != 0;
-            s.graceSec = 1800;
-            // With the cable and the dongle both plugged in the mouse shows up twice; keep one.
-            bool dup = false;
-            for (auto& o : ctx.out) {
-                if (o.name != s.name) continue;
-                dup = true;
-                o.charging |= s.charging;
-            }
-            if (dup) ctx.Claim(vid, pid);
-            else ctx.Add(s, vid, pid);
-            break;
+            ctx.Add(s, vid, pid, c);
         }
     }
 }

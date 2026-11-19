@@ -7,6 +7,7 @@
 // Protocol and model table from github.com/SteveWang92/peripheral-battery-tray (rog-battery,
 // MIT, itself based on G-Helper) and github.com/1gcat/BatteryTool.
 #include "drivers.h"
+#include "../bluetooth_presence.h"
 
 #include <cwctype>
 
@@ -127,7 +128,9 @@ bool ReadModel(HidDev& d, const Model& m, DeviceStatus& s) {
     s.key = L"rog:" + Hex4(m.pid) + (m.kind == KB ? L":kb" : L":ms");
     s.name = m.name;
     s.kind = m.kind == KB ? DeviceKind::Keyboard : DeviceKind::Mouse;
-    s.via = m.reportId ? L"ROG Omni Receiver" : L"2.4 GHz receiver / USB";
+    s.linkKind = m.reportId || d.coll().receiverEvidence ? LinkKind::UsbReceiver : LinkKind::Unknown;
+    s.via = m.reportId ? L"ROG Omni Receiver" :
+        d.coll().receiverEvidence ? L"2.4 GHz receiver" : L"USB / radio (unverified transport)";
     if (res == Reply::Asleep) {
         s.asleep = true;
     } else if (m.kind == KB) {
@@ -142,34 +145,30 @@ bool ReadModel(HidDev& d, const Model& m, DeviceStatus& s) {
     return true;
 }
 
-void AddOnce(PollContext& ctx, std::vector<std::wstring>& seen, const DeviceStatus& s) {
-    for (auto& n : seen)
-        if (n == s.name) return;
-    seen.push_back(s.name);
-    ctx.out.push_back(s);
-}
-
 // ROG Omni Receiver (0B05:1ACE): ask it which devices are paired ([01 A0 00] on col01 lists their
 // product ids in 4-byte slots from byte 5), then read each one on its own channel of the receiver.
-void PollOmni(PollContext& ctx, std::vector<std::wstring>& seen) {
+void PollOmni(PollContext& ctx) {
     if (ctx.IsClaimed(0x0B05, 0x1ACE)) return;
     auto list = ctx.Find(0x0B05, 0x1ACE, [](const HidColl& c) { return c.iface == 2 && c.outLen() >= 12 && PathHas(c.path, L"col01"); });
     if (list.empty()) return;
     HidDev d;
     std::vector<BYTE> r;
-    if (!d.Open(*list[0]) || Query(d, 0x01, 0xA0, 0x00, r) != Reply::Ok) return;
-    ctx.Claim(0x0B05, 0x1ACE);
-    for (size_t at = 5; at + 1 < r.size(); at += 4) {
-        USHORT pid = (USHORT)(r[at] | (r[at + 1] << 8));
-        if (!pid) break;
-        for (const Model& m : kModels) {
-            if (m.pid != pid || !m.reportId) continue;  // only the Omni-channel entry of that model
-            for (const HidColl* c : ctx.Find(0x0B05, 0x1ACE, [&](const HidColl& c) { return c.iface == 2 && c.outLen() >= 12 && PathHas(c.path, m.col); })) {
-                HidDev dev;
-                DeviceStatus s;
-                if (dev.Open(*c) && ReadModel(dev, m, s)) { AddOnce(ctx, seen, s); break; }
+    for (const auto* receiver : list) {
+        if (!d.Open(*receiver) || Query(d, 0x01, 0xA0, 0x00, r) != Reply::Ok) continue;
+        ctx.Claim(0x0B05, 0x1ACE);
+        for (size_t at = 5; at + 1 < r.size(); at += 4) {
+            USHORT pid = (USHORT)(r[at] | (r[at + 1] << 8));
+            if (!pid) break;
+            for (const Model& m : kModels) {
+                if (m.pid != pid || !m.reportId) continue;  // only the Omni-channel entry of that model
+                for (const HidColl* c : ctx.Find(0x0B05, 0x1ACE, [&](const HidColl& c) { return c.iface == 2 && c.outLen() >= 12 && PathHas(c.path, m.col); })) {
+                    HidDev dev;
+                    DeviceStatus s;
+                    if (c->connectionId != receiver->connectionId) continue;
+                    if (dev.Open(*c) && ReadModel(dev, m, s)) ctx.Add(s, c->vid, c->pid, c);
+                }
+                break;
             }
-            break;
         }
     }
 }
@@ -177,10 +176,10 @@ void PollOmni(PollContext& ctx, std::vector<std::wstring>& seen) {
 }  // namespace
 
 void PollRog(PollContext& ctx) {
-    std::vector<std::wstring> seen;  // one entry per device name (wired + receiver both present while charging)
-    PollOmni(ctx, seen);
+    const auto claimedBefore = ctx.claimed;
+    PollOmni(ctx);
     for (const Model& m : kModels) {
-        if (ctx.IsClaimed(0x0B05, m.pid)) continue;
+        if (claimedBefore.count({0x0B05, m.pid})) continue;
         auto colls = ctx.Find(0x0B05, m.pid, [&](const HidColl& c) {
             if (c.outLen() < 12 || c.page() < 0xFF00) return false;
             if (m.iface >= 0 && c.iface != m.iface) return false;
@@ -190,9 +189,8 @@ void PollRog(PollContext& ctx) {
             HidDev d;
             DeviceStatus s;
             if (!d.Open(*c) || !ReadModel(d, m, s)) continue;
-            AddOnce(ctx, seen, s);
+            ctx.Add(s, c->vid, c->pid, c);
             ctx.Claim(0x0B05, m.pid);
-            break;
         }
     }
 }

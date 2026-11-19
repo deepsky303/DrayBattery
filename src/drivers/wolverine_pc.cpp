@@ -52,6 +52,7 @@ void PollWolverinePc(PollContext& ctx) {
     for (const HidColl* c : ctx.Find(kVid, kPid, [](const HidColl& h) {
              return h.featLen() == kLen && h.page() == 0x01;
          })) {
+        if (ctx.SourceHandled(*c)) continue;
         HidDev device;
         if (!device.OpenFeatureOnly(*c)) continue;
         BYTE raw = 0;
@@ -59,19 +60,17 @@ void PollWolverinePc(PollContext& ctx) {
 
         DeviceStatus status;
         status.key = L"wolverine:1532:0A4C";
-        // Only one verified Wolverine V3 Pro is attached in this configuration.
-        // The two operating modes are the same controller and share a logical ID.
-        status.physicalId = L"razer:wolverine-v3pro:primary";
         status.name = L"Razer Wolverine V3 Pro";
         status.via = L"Razer HID (real battery)";
+        // This command does not identify cable vs dongle. Only exact PnP receiver
+        // evidence can promote this USB endpoint to presence-backed retention.
+        status.linkKind = LinkKind::Unknown;
         status.kind = DeviceKind::Gamepad;
         status.percent = Clamp100((raw * 100 + 127) / 255);
         status.estimated = true; // firmware-reported 0..255 value; normalized, not metrological accuracy
-        status.graceSec = 900;
         BYTE charging = 0;
         if (Query(device, kGetCharging, charging))
             status.charging = charging != 0;
-        ctx.Add(status, kVid, kPid);
-        return;
+        ctx.Add(status, kVid, kPid, c);
     }
 }

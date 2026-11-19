@@ -72,6 +72,7 @@ void PollSonyInzone(PollContext& ctx) {
     for (const Model& m : { Model{ 0x0FA8, 0x0001, L"Sony INZONE H9 II" }, Model{ 0x0EBF, 0x0002, L"Sony INZONE H5" } }) {
         if (ctx.IsClaimed(0x054C, m.pid)) continue;
         for (const HidColl* c : ctx.Find(0x054C, m.pid, [&](const HidColl& c) { return c.page() == 0xFF04 && c.outLen() >= 64; })) {
+            if (ctx.SourceHandled(*c)) continue;
             HidDev d;
             if (!d.Open(*c)) continue;
             int pct = -1;
@@ -82,11 +83,11 @@ void PollSonyInzone(PollContext& ctx) {
             s.name = m.name;
             s.kind = DeviceKind::Headset;
             s.via = L"2.4 GHz receiver";
+            s.linkKind = LinkKind::UsbReceiver;
             s.connected = !offline;
             s.percent = pct;
             s.charging = charging;
-            ctx.Add(s, 0x054C, m.pid);
-            break;
+            ctx.Add(s, 0x054C, m.pid, c);
         }
     }
 }

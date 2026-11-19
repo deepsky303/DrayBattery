@@ -50,6 +50,7 @@ void PollRongyuan(PollContext& ctx) {
 
     for (auto [vid, pid] : products) {
         for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) { return c.iface == 2 && c.page() == 0xFFFF && c.usage() == 0x0002 && c.featLen() >= 7; })) {
+            if (ctx.SourceHandled(*c)) continue;
             HidDev d;
             if (!d.OpenFeatureOnly(*c)) continue;
             std::vector<BYTE> r;
@@ -69,13 +70,14 @@ void PollRongyuan(PollContext& ctx) {
                 else s.name = product;
                 s.kind = keyboard ? DeviceKind::Keyboard : DeviceKind::Mouse;
                 s.via = L"2.4 GHz receiver";
+                s.linkKind = LinkKind::UsbReceiver; // two paired slots in receiver protocol
                 if (level >= 1 && level <= 100) s.percent = level;
-                ctx.out.push_back(s);
+                ctx.Add(s, vid, pid, c);
                 any = true;
             }
             ctx.Claim(vid, pid);
             (void)any;
-            break;
+
         }
     }
 }

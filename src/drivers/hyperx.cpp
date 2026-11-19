@@ -25,6 +25,7 @@ DeviceStatus Base(USHORT pid, const wchar_t* name) {
     s.name = name;
     s.kind = DeviceKind::Headset;
     s.via = L"2.4 GHz receiver";
+    s.linkKind = LinkKind::UsbReceiver; // wireless headset receiver status protocol
     return s;
 }
 
@@ -185,8 +186,9 @@ void PollHyperX(PollContext& ctx) {
         for (USHORT pid : m.pids) {
             if (ctx.IsClaimed(m.vid, pid)) continue;
             for (const HidColl* c : ctx.Find(m.vid, pid, m.accept)) {
+                if (ctx.SourceHandled(*c)) continue;
                 DeviceStatus s;
-                if (m.poll(*c, s)) { ctx.Add(s, m.vid, pid); break; }
+                if (m.poll(*c, s)) { ctx.Add(s, m.vid, pid, c); }
             }
         }
     }

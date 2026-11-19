@@ -15,7 +15,7 @@ bool zeroFullyCharged = false;
 HidColl Collection(const wchar_t* unit, const wchar_t* path) {
     HidColl c;
     c.vid = 0x046D; c.pid = 0xC539;
-    c.path = path; c.connectionId = unit;
+    c.path = path; c.connectionId = unit; c.transport = LinkKind::UsbCable;
     c.instanceIds = {unit};
     c.caps.UsagePage = 0xFF00; c.caps.Usage = 2;
     c.caps.OutputReportByteLength = 20;
@@ -80,7 +80,6 @@ int main() {
     assert(opened.size() == 2);
     for (const auto& d : ctx.out) {
         assert(d.receiverBacked && d.percent == 42 && d.lastLiveMs > 0);
-        assert(d.graceSec == 90);
     }
     assert(draybattery::MergeLogicalDevices(ctx.out).size() == 2);
 

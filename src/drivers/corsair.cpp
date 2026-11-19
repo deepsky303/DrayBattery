@@ -36,9 +36,10 @@ bool PollVoid(const HidColl& c, DeviceStatus& s) {
     if (s.name.empty()) s.name = L"Corsair wireless headset";
     s.kind = DeviceKind::Headset;
     s.via = L"2.4 GHz receiver";
+    s.linkKind = LinkKind::UsbReceiver; // VOID receiver protocol
     s.connected = st != 0;
     s.charging = st == 4 || st == 5;
-    if (st == 1 || st == 2 || s.charging) s.percent = Clamp100(r[2] & 0x7F);
+    if (st == 1 || st == 2 || s.charging) s.percent = (r[2] & 0x7F) <= 100 ? (r[2] & 0x7F) : -1;
     return true;
 }
 
@@ -76,8 +77,9 @@ void PollCorsair(PollContext& ctx) {
     for (auto [vid, pid] : ctx.Products(0x1B1C)) {
         if (Contains(kVoidPids, std::size(kVoidPids), pid)) {
             for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) { return (c.page() == 0xFFC5 || c.page() == 0xFF00) && c.outLen() > 0; })) {
+                if (ctx.SourceHandled(*c)) continue;
                 DeviceStatus s;
-                if (PollVoid(*c, s)) { ctx.Add(s, vid, pid); break; }
+                if (PollVoid(*c, s)) { ctx.Add(s, vid, pid, c); }
             }
             continue;
         }
@@ -87,6 +89,7 @@ void PollCorsair(PollContext& ctx) {
             return sizes && (c.page() == 0xFF42 || (knownBragi && c.page() >= 0xFF00) || (knownBragi && c.iface == 4));
         });
         for (const HidColl* c : colls) {
+            if (ctx.SourceHandled(*c)) continue;
             Bragi b(*c);
             if (!b.ok()) continue;
             bool any = false;
@@ -104,13 +107,14 @@ void PollCorsair(PollContext& ctx) {
                 s.kind = GuessKind(s.name);
                 if (s.kind == DeviceKind::Other) s.kind = KindFromCollections(ctx.colls, vid, pid);
                 s.via = target == 0x08 ? L"USB / Bluetooth" : L"Corsair receiver";
+                s.linkKind = target == 0x08 ? LinkKind::Unknown : LinkKind::UsbReceiver;
                 s.percent = Clamp100((int)(level + 5) / 10);
                 unsigned charge = 0;
                 if (b.Get(target, 0x10, charge)) s.charging = charge == 1 || charge == 3;
-                ctx.out.push_back(s);
+                ctx.Add(s, vid, pid, c);
                 any = true;
             }
-            if (any) { ctx.Claim(vid, pid); break; }
+            if (any) ctx.Claim(vid, pid);
         }
     }
 }

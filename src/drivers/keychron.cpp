@@ -52,11 +52,13 @@ bool Query(HidDev& d, BYTE cmd, std::vector<BYTE>& r) {
 void PollKeychron(PollContext& ctx) {
     for (auto [vid, pid] : ctx.Products(0x3434)) {
         for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) { return c.page() >= 0xFF00 && c.outLen() == 65 && c.inLen() == 65; })) {
+            if (ctx.SourceHandled(*c)) continue;
             HidDev d;
             if (!d.Open(*c)) continue;
             std::vector<BYTE> r, r1;
             int percent = -1;
-            bool charging = false, wireless = true;
+            bool charging = false;
+            LinkKind role = LinkKind::Unknown;
             bool got1 = Query(d, 0x01, r1);
             if (got1 && (USHORT)(r1[6] | (r1[7] << 8)) == 0x3434 && r1[11] <= 100) {
                 percent = r1[11];  // M4 and other mice on the classic protocol: the reply carries the vendor id
@@ -64,21 +66,23 @@ void PollKeychron(PollContext& ctx) {
             } else if (Query(d, 0x41, r) && r[10] <= 3 && r[11] <= 100) {
                 percent = r[11];  // 8K mouse on its receiver
                 charging = r[10] == 1;
+                role = LinkKind::UsbReceiver;
             } else if (got1 && r1[10] <= 3 && r1[11] >= 1 && r1[11] <= 100 && r1[5] >= 1 && r1[5] <= 8) {
                 percent = r1[11];  // 8K mouse on the USB cable (no bit 6); byte 5 = highest polling rate level
                 charging = r1[10] == 1;
-                wireless = false;
+                role = LinkKind::UsbCable;
             }
             if (percent < 0) continue;
             DeviceStatus s;
             s.key = L"keychron:" + Hex4(pid);
             s.name = CleanName(HidProduct(*c));
             s.kind = DeviceKind::Mouse;
-            s.via = wireless ? L"2.4 GHz receiver" : L"USB cable";
+            s.via = role == LinkKind::UsbReceiver ? L"2.4 GHz receiver" :
+                role == LinkKind::UsbCable ? L"USB cable" : L"USB / radio (unverified transport)";
+            s.linkKind = role; // classic 0x01 validates a battery, not a radio role
             s.percent = percent;
             s.charging = charging;
-            ctx.Add(s, vid, pid);
-            break;
+            ctx.Add(s, vid, pid, c);
         }
     }
 }

@@ -90,8 +90,11 @@ int PollWgi(PollContext& ctx) {
                 s.via = L"Windows Gaming Input";
                 s.percent = Clamp100(r * 100 / f);
                 s.charging = st == ABI::Windows::System::Power::BatteryStatus_Charging;
+                // TryGetBatteryReport exposes an OS report without an acquisition
+                // timestamp or uncached-read guarantee. Do not restamp it as live.
+                s.batteryCached = true;
                 ctx.Add(s, vid, pid);
-                added++;
+                // Permit XInput's explicitly coarse, state-checked fallback below.
             }
             Release(rem);
             Release(full);
@@ -129,11 +132,12 @@ const XInputApi& LoadXInput() {
 void PollXInput(PollContext& ctx) {
     // An Xbox controller on Bluetooth may already be listed with a real percentage.
     bool btXbox = false;
-    for (auto& s : ctx.out) btXbox |= s.via == L"Bluetooth" && s.name.find(L"Xbox") != std::wstring::npos;
+    for (auto& s : ctx.out) btXbox |= s.linkKind == LinkKind::Bluetooth && s.name.find(L"Xbox") != std::wstring::npos;
     int precise = btXbox ? 0 : PollWgi(ctx);
     bool wolverineWithRealBattery = false;
     for (const auto& s : ctx.out)
-        if (s.key == L"wolverine:1532:0A4C" || s.key == L"wolverine:1532:0A3F")
+        if (draybattery::HasId(s.sourceKeys, L"wolverine:1532:0A4C") ||
+            draybattery::HasId(s.sourceKeys, L"wolverine:1532:0A3F"))
             wolverineWithRealBattery = true;
 
     const XInputApi& api = LoadXInput();
@@ -160,9 +164,10 @@ void PollXInput(PollContext& ctx) {
                 case BATTERY_LEVEL_EMPTY:  s.percent = 5;   s.levelText = L"Empty";  break;
                 case BATTERY_LEVEL_LOW:    s.percent = 25;  s.levelText = L"Low";    break;
                 case BATTERY_LEVEL_MEDIUM: s.percent = 60;  s.levelText = L"Medium"; break;
-                default:                   s.percent = 100; s.levelText = L"Full";   break;
+                case BATTERY_LEVEL_FULL:   s.percent = 100; s.levelText = L"Full";   break;
+                default: continue;
             }
-            ctx.out.push_back(s);
+            ctx.Add(s, 0, 0);
         }
     }
 }

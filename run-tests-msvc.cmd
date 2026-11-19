@@ -51,4 +51,20 @@ cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /W4 /DNOMINMAX /DUNICODE /D_UNICODE /
 if not "%ERRORLEVEL%"=="0" exit /b 19
 "build\ghub_match_test.exe"
 if not "%ERRORLEVEL%"=="0" exit /b 20
+cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /W4 /DNOMINMAX /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /I "src" /Fe"build\presence_model_test.exe" tests\presence_model_test.cpp
+if not "%ERRORLEVEL%"=="0" exit /b 21
+"build\presence_model_test.exe"
+if not "%ERRORLEVEL%"=="0" exit /b 22
+cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /W4 /DNOMINMAX /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /I "src" /Fe"build\vendor_presence_test.exe" tests\vendor_presence_test.cpp src\drivers\razer.cpp src\drivers\corsair.cpp src\drivers\cherry.cpp src\drivers\gamesir.cpp
+if not "%ERRORLEVEL%"=="0" exit /b 23
+"build\vendor_presence_test.exe"
+if not "%ERRORLEVEL%"=="0" exit /b 24
+cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /W4 /DNOMINMAX /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /I "src" /Fe"build\windows_bluetooth_test.exe" tests\windows_bluetooth_test.cpp
+if not "%ERRORLEVEL%"=="0" exit /b 25
+"build\windows_bluetooth_test.exe"
+if not "%ERRORLEVEL%"=="0" exit /b 26
+cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /W4 /DNOMINMAX /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /I "src" /Fe"build\transport_role_test.exe" tests\transport_role_test.cpp src\drivers\steelseries.cpp src\drivers\coolermaster.cpp src\drivers\keychron.cpp src\drivers\kysona.cpp src\drivers\glorious.cpp src\drivers\lamzu.cpp src\drivers\wolverine_pc.cpp
+if not "%ERRORLEVEL%"=="0" exit /b 27
+"build\transport_role_test.exe"
+if not "%ERRORLEVEL%"=="0" exit /b 28
 echo ALL_TESTS_PASSED
