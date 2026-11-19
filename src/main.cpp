@@ -689,12 +689,26 @@ DWORD WINAPI PresenceWorker(LPVOID) {
     return 0;
 }
 
+std::vector<std::wstring> WolverineLinks(const PollContext& ctx) {
+    std::vector<std::wstring> hid;
+    for (const auto& c : ctx.colls)
+        if (c.vid == 0x1532 && c.pid == 0x0A4C) hid.push_back(c.connectionId);
+    return draybattery::WolverineDiscoveryLinks(ctx.presence.usbPresent, hid);
+}
+std::vector<std::wstring> WolverineReports(const std::vector<DeviceStatus>& devices) {
+    std::set<std::wstring> links;
+    for (const auto& d : devices) if (d.batteryFresh && !d.batteryCached && !d.asleep &&
+        draybattery::HasId(d.sourceKeys, L"wolverine:1532:0A4C")) links.insert(d.connectionId);
+    return {links.begin(), links.end()};
+}
+
 DWORD WINAPI Worker(LPVOID) {
     unsigned fullPolls = 0, missingPolls = 0;
     ULONGLONG nextFull = 0, nextHub = 0, nextRetry = 0;
     std::vector<HidColl> inventory;
     std::vector<std::wstring> logitechLinks;
     draybattery::LogitechPollTargets targets;
+    draybattery::DeviceDiscoveryRetries wolverineDiscovery;
     auto& hubLinks = targets.ghub;
     auto& retryLinks = targets.retry;
     unsigned inventoryGeneration = g_deviceGeneration.load();
@@ -706,12 +720,20 @@ DWORD WINAPI Worker(LPVOID) {
             PollContext ctx;
             ctx.stopEvent = g_stopEvt;
             if (now >= nextFull || poll->generation != inventoryGeneration) {
+                const bool topologyChanged = poll->generation != inventoryGeneration;
+                const auto discoveryDue = wolverineDiscovery.Due(now);
                 if (g_osOnly) {
                     ctx.colls = EnumHid(&ctx.inventoryComplete);
                     PollGHub(ctx);
                     PollBluetooth(ctx);
                     PollXInput(ctx);
                 } else PollAllDevices(ctx, g_stopEvt);
+                if (!g_osOnly) {
+                    const auto reports = WolverineReports(ctx.out);
+                    const auto scannedAt = GetTickCount64();
+                    wolverineDiscovery.Observe(WolverineLinks(ctx), reports, scannedAt, topologyChanged);
+                    if (!topologyChanged) wolverineDiscovery.Complete(discoveryDue, reports, scannedAt);
+                }
                 inventory = ctx.colls;
                 logitechLinks = draybattery::logitech::Connections(inventory);
                 inventoryGeneration = poll->generation;
@@ -729,7 +751,8 @@ DWORD WINAPI Worker(LPVOID) {
                 if (hubDue) scope = hubLinks;
                 if (retryDue) scope.insert(scope.end(), retryLinks.begin(), retryLinks.end());
                 ctx.colls = draybattery::logitech::SelectLinks(inventory, scope);
-                poll->polledConnections = draybattery::logitech::Connections(ctx.colls);
+                const auto logitechPolled = draybattery::logitech::Connections(ctx.colls);
+                poll->polledConnections = logitechPolled;
                 PollGHub(ctx);
                 if (retryDue) {
                     // Only unresolved links are eligible for direct HID++. Never
@@ -738,7 +761,25 @@ DWORD WINAPI Worker(LPVOID) {
                     PollLogitech(ctx);
                 }
                 PollLogitechCache(ctx);
-                targets.Observe(ctx.out, poll->polledConnections);
+                targets.Observe(ctx.out, logitechPolled);
+                const auto discoveryScope = wolverineDiscovery.Due(now);
+                if (!g_osOnly && !discoveryScope.empty()) {
+                    // Metadata may become ready after the initial XInput arrival.
+                    // Re-enumerate descriptors, then issue only Wolverine battery GETs.
+                    SetDrayPollStage(L"Wolverine discovery inventory");
+                    const auto fresh = EnumHid();
+                    for (const auto& c : fresh) if (c.vid == 0x1532 && c.pid == 0x0A4C &&
+                        draybattery::HasId(discoveryScope, c.connectionId)) ctx.colls.push_back(c);
+                    poll->polledConnections.insert(poll->polledConnections.end(), discoveryScope.begin(), discoveryScope.end());
+                    LogDrayLifecycle(L"WOLVERINE_DISCOVERY_RETRY");
+                    SetDrayPollStage(L"Wolverine discovery battery GET");
+                    PollWolverinePc(ctx);
+                    const auto reports = WolverineReports(ctx.out);
+                    wolverineDiscovery.Complete(discoveryScope, reports, GetTickCount64());
+                    LogDrayLifecycle((L"WOLVERINE_DISCOVERY_RESULT links=" + std::to_wstring(discoveryScope.size()) +
+                        L" replies=" + std::to_wstring(reports.size())).c_str());
+                    SetDrayPollStage(L"idle");
+                }
                 if (hubDue) nextHub = 0;
                 if (retryDue) nextRetry = 0;
             }
@@ -762,11 +803,13 @@ DWORD WINAPI Worker(LPVOID) {
             else LogDrayLifecycle(L"RESULTS_POST_FAILED");
         } catch (...) {
             LogDrayLifecycle(L"WORKER_EXCEPTION");
+            SetDrayPollStage(L"idle");
+            wolverineDiscovery.Cancel(); // an overdue retry must not spin after a driver exception
             nextFull = GetTickCount64() + 30000;
             nextHub = nextRetry = nextFull;
         }
         const DWORD wait = draybattery::WorkerWaitMs(GetTickCount64(), nextFull,
-            nextHub, !hubLinks.empty(), nextRetry, !retryLinks.empty());
+            nextHub, !hubLinks.empty(), nextRetry, !retryLinks.empty(), wolverineDiscovery.Next());
         HANDLE events[2] = {g_stopEvt, g_refreshEvt};
         const DWORD result = WaitForMultipleObjects(2, events, FALSE, wait);
         if (result == WAIT_OBJECT_0) break;
@@ -848,8 +891,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
                 ++g_deviceGeneration;
                 if (wp == DBT_DEVICEREMOVECOMPLETE) {
-                    // The whole USB-device removal event remains definitive even if the
-                    // same socket has already re-enumerated before this message is handled.
+                    // A missing USB connection cannot prove a receiver is still plugged in.
                     const auto* hdr = reinterpret_cast<const DEV_BROADCAST_HDR*>(lp);
                     if (hdr && hdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE &&
                         hdr->dbch_size >= sizeof(DEV_BROADCAST_DEVICEINTERFACE_W)) {

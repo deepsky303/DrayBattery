@@ -17,7 +17,7 @@
 | Logitech G903 LIGHTSPEED | Local G HUB | Verified | Battery percentage |
 | Logitech G915 X LIGHTSPEED | Local G HUB | Verified | Charging, sleeping and physical identity |
 | Razer Wolverine V3 Pro | Windows Mode, 1532:0A4C | Verified | HID battery field, normalized from 0–255 |
-| Razer Wolverine V3 Pro | Xbox Mode, 1532:0A3F | Verified | Foreground GIP request and last-known cache |
+| Razer Wolverine V3 Pro | Xbox Mode, 1532:0A3F | Separate reader | Automatic indicator disabled; separate foreground GIP request |
 
 These are validated protocol reads, not independent measurements of battery capacity.
 
@@ -92,6 +92,11 @@ no longer interpreted as charging state. For local UI verification, `--os-only`
 uses Windows properties and localhost G HUB without peripheral commands.
 
 This fix was hardware-tested with Wolverine `1532:0A4C` in Windows mode.
+When USB has appeared after power-on but no battery reading is available yet,
+four bounded Wolverine-only read retries use 3, 8, 16 and 30 second intervals.
+A successful reading cancels the retries. USB disappearance removes the icon:
+on the tested receiver, Windows cannot distinguish controller power-off from
+receiver removal, so a missing USB node does not retain a last-known indicator.
 In Xbox mode (`1532:0A3F`), automatic use of the old model-only cache is disabled;
 the foreground GIP reader menu item does not imply a working automatic indicator.
 That mode still needs separate verification outside gameplay.
