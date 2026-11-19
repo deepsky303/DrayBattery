@@ -3,6 +3,12 @@
 #include <cstdio>
 #include <string>
 
+void LogDrayLifecycleCode(const wchar_t* event, unsigned long code) {
+    wchar_t text[160]{};
+    swprintf_s(text, L"%ls code=0x%08lX", event, code);
+    LogDrayLifecycle(text);
+}
+
 // Helps diagnose a missing tray app after Windows logon.
 // Not telemetry: local only, no serials/paths/device identifiers.
 void LogDrayLifecycle(const wchar_t* event) {

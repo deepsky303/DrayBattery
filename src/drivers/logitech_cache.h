@@ -1,9 +1,7 @@
 #pragma once
 #include "drivers.h"
 
-// Store only last confirmed Logitech battery values under HKCU.
-// When the receiver remains present but Logitech G HUB reports an asleep
-// device without a battery endpoint, the cached level stays visible dimmed.
-// No external files, drivers or network access are required.
-void SaveLogitechBattery(USHORT receiverPid, const DeviceStatus& reading);
+// Legacy registry cache is deliberately ignored, without deleting user data.
+// Last-known display state now lives only in BatteryLifecycle for this session.
+// This final policy pass cannot synthesize a device or refresh a live timestamp.
 void PollLogitechCache(PollContext& ctx);

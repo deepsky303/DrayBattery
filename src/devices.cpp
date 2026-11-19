@@ -8,41 +8,32 @@
 #include "hid.h"
 #include "logical_identity.h"
 
+void PollAllDevices(PollContext& ctx, HANDLE stopEvent) {
+    ctx = {};
+    ctx.stopEvent = stopEvent;
+    if (ctx.Stopping()) return;
+    ctx.colls = EnumHid(&ctx.inventoryComplete);
+    const auto drivers = {
+        PollGlorious, PollAula, PollAtkSerial, PollKysona, PollKeychron,
+        PollLamzu, PollRongyuan, PollSonyInzone, PollRog, PollZowie,
+        PollRapoo, PollMiscMice, PollRazerHeadsets, PollHyperX,
+        PollGHub, PollLogitech, PollLogitechCache,
+        PollWolverinePc, PollWolverineXbox, PollRazer, PollSteelSeries,
+        PollCorsair, PollCoolerMaster, PollPlayStation, PollGameSir,
+        PollCherry, PollSteamController, PollHeadsetControl,
+        PollGenericHid, PollBluetooth, PollXInput
+    };
+    for (auto driver : drivers) {
+        if (ctx.Stopping()) return;
+        driver(ctx);
+    }
+    ctx.out = draybattery::MergeLogicalDevices(ctx.out);
+}
+
 std::vector<DeviceStatus> PollAllDevices() {
     PollContext ctx;
-    ctx.colls = EnumHid();
-    PollGlorious(ctx);
-    PollAula(ctx);       // before Kysona, which shares the 3554 vendor id and would probe it first
-    PollAtkSerial(ctx);  // before Kysona, which shares the ATK vendor id
-    PollKysona(ctx);
-    PollKeychron(ctx);
-    PollLamzu(ctx);
-    PollRongyuan(ctx);
-    PollSonyInzone(ctx);
-    PollRog(ctx);
-    PollZowie(ctx);
-    PollRapoo(ctx);
-    PollMiscMice(ctx);
-    PollRazerHeadsets(ctx);  // before the generic Razer driver, which shares the vendor id
-    PollHyperX(ctx);
-    PollGHub(ctx); // Read-only, localhost only; falls back to HID++ if unavailable.
-    PollLogitech(ctx);
-    PollLogitechCache(ctx); // Keep known sleeping receivers visible across restarts.
-    PollWolverinePc(ctx); // Feature report 0x04: verified raw battery in PC mode.
-    PollWolverineXbox(ctx); // 0A3F: cached validated GIP reading, or unknown until foreground refresh.
-    PollRazer(ctx);
-    PollSteelSeries(ctx);
-    PollCorsair(ctx);
-    PollCoolerMaster(ctx);
-    PollPlayStation(ctx);
-    PollGameSir(ctx);
-    PollCherry(ctx);
-    PollSteamController(ctx);
-    PollHeadsetControl(ctx);
-    PollGenericHid(ctx);
-    PollBluetooth(ctx);
-    PollXInput(ctx);
-    return draybattery::MergeLogicalDevices(ctx.out);
+    PollAllDevices(ctx);
+    return std::move(ctx.out);
 }
 
 std::wstring DumpHidCollections() {

@@ -18,6 +18,8 @@ DeviceStatus Make(const wchar_t* key,const wchar_t* name,
     return s;
 }
 int main(){
+    assert(draybattery::CanonicalModelName(L"  Logitech G903  LS \t") ==
+           draybattery::CanonicalModelName(L"Logitech G903 LIGHTSPEED"));
     auto kbdUsb=Make(L"logi:C356:1",L"Logitech G915 X LIGHTSPEED",
                      L"logitech:KEYBOARD.g915_x_ls.0.2398464588",DeviceKind::Keyboard,32,false,true);
     auto kbdWifi=Make(L"logi:C547:1",L"Logitech G915 X LS",
@@ -30,12 +32,11 @@ int main(){
         assert(result[0].sourceKeys.size()==2);
         assert(result[0].key==L"physical:logitech:KEYBOARD.g915_x_ls.0.2398464588");
     }
-    // Legacy cached records lack an ID; one uniquely matched active device can
-    // safely suppress one stale receiver icon in the current snapshot.
+    // Legacy cache cannot prove identity from a model name alone.
     auto oldCache=kbdWifi;
     oldCache.physicalId.clear();
     auto legacy=draybattery::MergeLogicalDevices({oldCache,kbdUsb});
-    assert(legacy.size()==1 && legacy[0].percent==32);
+    assert(legacy.size()==2);
 
     // Two distinct physically identifiable same-model devices never collapse.
     auto otherUnit=kbdUsb;
@@ -66,10 +67,12 @@ int main(){
     oldHid.via=L"Logitech receiver";
     oldHid.graceSec=1800;
     oldHid.sourceKeys={L"logi:C539:1"};
+    oldHid.connectionId=L"receiver-A";
     auto newHub=Make(L"physical:logitech:MOUSE.g903_hero.0.1680857627",
         L"Logitech G903 LIGHTSPEED",
         L"logitech:MOUSE.g903_hero.0.1680857627",DeviceKind::Mouse,41);
     newHub.sourceKeys={L"logi:C539:1"};
+    newHub.connectionId=L"receiver-A";
     assert(draybattery::SupersededPreviousEntry(oldHid, {newHub}));
     auto asleepHid=oldHid;
     asleepHid.asleep=true;
@@ -78,6 +81,7 @@ int main(){
     auto otherReceiver=oldHid;
     otherReceiver.key=L"logi:C540:1";
     otherReceiver.sourceKeys={L"logi:C540:1"};
+    otherReceiver.connectionId=L"receiver-B";
     assert(!draybattery::SupersededPreviousEntry(otherReceiver, {newHub}));
     // Even a shared receiver alias cannot override distinct verified units.
     auto anotherUnit=oldHid;

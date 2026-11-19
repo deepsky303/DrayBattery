@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <dbt.h>
+#include <cfgmgr32.h>
 #include <initguid.h>
 #include <hidclass.h>
 
@@ -11,16 +12,20 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <memory>
 
 #include "devices.h"
 #include "device_db.h"
 #include "logical_identity.h"
+#include "battery_lifecycle.h"
 #include "lifecycle.h"
 #include "widget.h"
 #include "palette.h"
 #include "poll_schedule.h"
 #include "wolverine_xbox.h"
 #include "drivers/wolverine_xbox_cache.h"
+#include "drivers/logitech_transport.h"
 #include "hid.h"
 #include <commctrl.h>
 
@@ -32,6 +37,7 @@ constexpr UINT WM_WIDGET_CLICK = WM_APP + 3;
 constexpr UINT WM_XBOX_BATTERY_UPDATED = WM_APP + 4;
 constexpr UINT_PTR TIMER_DEBOUNCE = 1;
 constexpr UINT_PTR TIMER_WIDGET = 2;
+constexpr UINT_PTR TIMER_BATTERY = 3;
 // Poll intervals are provided by poll_schedule.h (startup retries, then 60 s).
 constexpr int LOW_BATTERY = 15;
 constexpr UINT PLACEHOLDER_ID = 1;
@@ -47,6 +53,9 @@ const wchar_t* kSettingsKey = L"Software\\DrayBattery";
 HINSTANCE g_inst;
 HWND g_hwnd;
 HANDLE g_refreshEvt, g_stopEvt, g_worker;
+std::atomic<unsigned> g_deviceGeneration{0};
+std::atomic<bool> g_stopping{false};
+std::atomic<ULONGLONG> g_workerProgress{0};
 UINT g_taskbarCreatedMsg;
 bool g_lightTaskbar;
 bool g_wantWidget = true;  // user's choice: taskbar widget (default) or tray icons
@@ -56,13 +65,13 @@ struct TrayEntry {
     UINT uid = 0;
     DeviceStatus st;
     int lastPct = -1;        // last known percentage, kept while the device sleeps
-    ULONGLONG lastSeen = 0;
     bool added = false;
     bool lowWarned = false;
     std::wstring iconSig;    // what the current icon shows, to avoid needless redraws
     HICON icon = nullptr;
 };
 std::map<std::wstring, TrayEntry> g_entries;
+draybattery::BatteryLifecycle g_batteries;
 bool g_placeholder = false;
 HICON g_placeholderIcon = nullptr;
 
@@ -287,7 +296,7 @@ std::wstring StatusText(const TrayEntry& e) {
     return t;
 }
 
-void TrayCall(DWORD msg, UINT uid, HICON icon, const std::wstring& tip, const wchar_t* infoTitle = nullptr,
+bool TrayCall(DWORD msg, UINT uid, HICON icon, const std::wstring& tip, const wchar_t* infoTitle = nullptr,
               const std::wstring& info = L"") {
     NOTIFYICONDATAW nid{ sizeof(nid) };
     nid.hWnd = g_hwnd;
@@ -302,11 +311,12 @@ void TrayCall(DWORD msg, UINT uid, HICON icon, const std::wstring& tip, const wc
         CopyTip(nid.szInfo, ARRAYSIZE(nid.szInfo), info);
         nid.dwInfoFlags = NIIF_WARNING;
     }
-    Shell_NotifyIconW(msg, &nid);
-    if (msg == NIM_ADD) {
+    const bool ok = Shell_NotifyIconW(msg, &nid) != FALSE;
+    if (ok && msg == NIM_ADD) {
         nid.uVersion = NOTIFYICON_VERSION_4;
         Shell_NotifyIconW(NIM_SETVERSION, &nid);
     }
+    return ok;
 }
 
 void TrayDelete(UINT uid) {
@@ -317,6 +327,7 @@ void TrayDelete(UINT uid) {
 }
 
 void UpdatePlaceholder() {
+    if (g_stopping.load()) return;
     if (g_useWidget) {
         if (g_placeholder) { TrayDelete(PLACEHOLDER_ID); g_placeholder = false; }
         return;
@@ -325,8 +336,9 @@ void UpdatePlaceholder() {
     for (auto& [k, e] : g_entries) any |= e.added;
     if (!any && !g_placeholder) {
         if (!g_placeholderIcon) g_placeholderIcon = RenderIcon(L"-", -1, Foreground(), Foreground(), true);
-        TrayCall(NIM_ADD, PLACEHOLDER_ID, g_placeholderIcon, L"Dray Battery\nNo devices with battery info found");
-        g_placeholder = true;
+        g_placeholder = TrayCall(NIM_ADD, PLACEHOLDER_ID, g_placeholderIcon, L"Dray Battery\nNo devices with battery info found");
+        if (!g_placeholder) g_placeholder = TrayCall(NIM_MODIFY, PLACEHOLDER_ID, g_placeholderIcon,
+            L"Dray Battery\nNo devices with battery info found");
     } else if (any && g_placeholder) {
         TrayDelete(PLACEHOLDER_ID);
         g_placeholder = false;
@@ -334,8 +346,10 @@ void UpdatePlaceholder() {
 }
 
 void ApplyEntry(TrayEntry& e) {
+    if (g_stopping.load()) return;
     const auto& s = e.st;
-    bool visible = s.connected && !g_useWidget && !IsHidden(s.key);
+    bool visible = s.connected && !g_useWidget && !IsHidden(s.key) &&
+        (!s.receiverBacked || draybattery::WithinReceiverDisplayTtl(s.lastLiveMs, GetTickCount64()));
     if (!visible) {
         if (e.added) { TrayDelete(e.uid); e.added = false; }
         return;
@@ -360,8 +374,9 @@ void ApplyEntry(TrayEntry& e) {
         infoTitle = L"Low battery";
         info = s.name + L": " + (s.approximate ? s.levelText : std::to_wstring(s.percent) + L"%");
     }
-    TrayCall(e.added ? NIM_MODIFY : NIM_ADD, e.uid, e.icon, tip, infoTitle, info);
-    e.added = true;
+    const bool wasAdded = e.added;
+    e.added = TrayCall(wasAdded ? NIM_MODIFY : NIM_ADD, e.uid, e.icon, tip, infoTitle, info);
+    if (!e.added) e.added = TrayCall(wasAdded ? NIM_ADD : NIM_MODIFY, e.uid, e.icon, tip);
 }
 
 int KindOrder(DeviceKind k) {  // headset first, then mouse, ... (matches the left-to-right layout)
@@ -378,7 +393,8 @@ void UpdateWidget() {
     if (!g_useWidget) return;
     std::vector<const TrayEntry*> list;
     for (auto& [k, e] : g_entries)
-        if (e.st.connected && !IsHidden(k)) list.push_back(&e);
+        if (e.st.connected && !IsHidden(k) && (!e.st.receiverBacked ||
+            draybattery::WithinReceiverDisplayTtl(e.st.lastLiveMs, GetTickCount64()))) list.push_back(&e);
     std::sort(list.begin(), list.end(), [](const TrayEntry* a, const TrayEntry* b) {
         int ka = KindOrder(a->st.kind), kb = KindOrder(b->st.kind);
         return ka != kb ? ka < kb : a->st.name < b->st.name;
@@ -403,48 +419,48 @@ void UpdateWidget() {
     widget::SetItems(items, tip);
 }
 
-void OnResults(std::vector<DeviceStatus>& results) {
-    std::map<std::wstring, bool> seen;
-    for (auto& s : results) {
-        // Explicit NOT_CONNECTED records are control-plane invalidations,
-        // not visible battery devices. Retire their old live/stale icons below.
-        if (!s.connected) continue;
-        auto& e = g_entries[s.key];
-        if (!e.uid) e.uid = StableId(s.key);
-        e.st = s;
-        if (s.percent >= 0) e.lastPct = s.percent;
-        e.lastSeen = GetTickCount64();
-        seen[s.key] = true;
-        ApplyEntry(e);
-    }
+void SyncBatteryView() {
+    if (g_stopping.load()) return;
+    g_batteries.Expire(GetTickCount64());
     for (auto it = g_entries.begin(); it != g_entries.end();) {
-        auto& e = it->second;
-        // Some receivers drop sleeping devices from the link; keep showing the last value for a while.
-        // A previous Logitech receiver entry can outlive its source for 30 minutes.
-        // If another verified identity now reports the same physical receiver/slot,
-        // don't keep showing the superseded (dimmed) percentage beside the live one.
-        bool superseded = !seen.count(it->first) &&
-                           draybattery::SupersededPreviousEntry(e.st, results);
-        bool disconnected = !seen.count(it->first) &&
-                            draybattery::InvalidatedByExplicitDisconnect(e.st, results);
-        bool inGrace = !superseded && !disconnected && !seen.count(it->first) &&
-                       e.st.graceSec > 0 && e.st.connected &&
-                       GetTickCount64() - e.lastSeen < (ULONGLONG)e.st.graceSec * 1000;
-        if (inGrace) {
-            e.st.percent = -1;
-            e.st.asleep = true;
-            ApplyEntry(e);
-        }
-        if (!seen.count(it->first) && !inGrace) {
+        if (!g_batteries.Entries().count(it->first)) {
             if (it->second.added) TrayDelete(it->second.uid);
             if (it->second.icon) DestroyIcon(it->second.icon);
             it = g_entries.erase(it);
-        } else {
-            ++it;
-        }
+        } else ++it;
+    }
+    for (const auto& [key, battery] : g_batteries.Entries()) {
+        auto& e = g_entries[key];
+        if (!e.uid) e.uid = StableId(key);
+        e.st = battery.st;
+        e.lastPct = battery.lastPct;
+        ApplyEntry(e);
     }
     UpdatePlaceholder();
     UpdateWidget();
+    KillTimer(g_hwnd, TIMER_BATTERY);
+    const auto delay = g_batteries.NextExpiryMs(GetTickCount64());
+    if (delay) SetTimer(g_hwnd, TIMER_BATTERY, (UINT)delay, nullptr);
+}
+
+void OnResults(const DevicePoll& poll) {
+    if (!g_batteries.Apply(poll, GetTickCount64(), g_deviceGeneration.load(), g_stopping.load())) return;
+    SyncBatteryView();
+}
+
+void RemoveAbsentReceivers() {
+    std::set<std::wstring> absent;
+    for (const auto& [key, e] : g_batteries.Entries()) {
+        const auto& s = e.st;
+        if (!s.receiverBacked || s.connectionId.rfind(L"usb\\", 0) != 0) continue;
+        DEVINST node = 0;
+        std::wstring id = s.connectionId;
+        if (CM_Locate_DevNodeW(&node, id.data(), CM_LOCATE_DEVNODE_NORMAL) == CR_NO_SUCH_DEVNODE)
+            absent.insert(id);
+    }
+    bool changed = false;
+    for (const auto& id : absent) changed |= g_batteries.RemoveConnection(id);
+    if (changed) SyncBatteryView();
 }
 
 void RedrawAll();
@@ -452,13 +468,19 @@ void RedrawAll();
 // Makes the actual display match the chosen mode; falls back to tray icons if the taskbar
 // widget cannot be created (e.g. Explorer not ready yet). Called once a second.
 void Reconcile() {
+    if (g_stopping.load()) return;
+    if (g_batteries.Expire(GetTickCount64())) SyncBatteryView();
     const bool paletteChanged = palette::UpdateFromTaskbar();
     bool alive = g_wantWidget && widget::Alive();
-    if (g_wantWidget && !alive) alive = widget::Create(g_inst, g_hwnd, WM_WIDGET_CLICK, g_lightTaskbar);
+    const bool recreate = g_wantWidget && !alive;
+    if (recreate) {
+        alive = widget::Create(g_inst, g_hwnd, WM_WIDGET_CLICK, g_lightTaskbar);
+        if (alive) LogDrayLifecycle(L"WIDGET_CREATED");
+    }
     if (!g_wantWidget) widget::Destroy();
     bool changed = alive != g_useWidget;
     g_useWidget = alive;
-    if (changed) {
+    if (changed || (recreate && alive)) {
         for (auto& [k, e] : g_entries) ApplyEntry(e);
         UpdatePlaceholder();
         UpdateWidget();
@@ -468,6 +490,24 @@ void Reconcile() {
     if (paletteChanged) {
         RedrawAll();
         widget::SetLightTheme(g_lightTaskbar);
+    }
+    if (!g_useWidget) {
+        for (auto& [key, e] : g_entries) if (!e.added) ApplyEntry(e);
+        UpdatePlaceholder();
+    }
+    // A UI heartbeat distinguishes a running UI from startup/exit/Explorer loss.
+    static ULONGLONG lastHeartbeat = 0;
+    static bool workerStalled = false;
+    const auto now = GetTickCount64();
+    if (now - lastHeartbeat >= 300000) {
+        LogDrayLifecycle(g_useWidget ? L"HEARTBEAT(widget)" : L"HEARTBEAT(tray)");
+        lastHeartbeat = now;
+    }
+    const auto progress = g_workerProgress.load();
+    const bool stalled = progress && now - progress > 120000;
+    if (stalled != workerStalled) {
+        LogDrayLifecycle(stalled ? L"WORKER_STALLED(120s)" : L"WORKER_RECOVERED");
+        workerStalled = stalled;
     }
 }
 
@@ -479,8 +519,8 @@ void SetMode(bool useWidget) {
 
 void ReAddAll() {
     g_placeholder = false;
-    for (auto& [k, e] : g_entries) { e.added = false; ApplyEntry(e); }
-    UpdatePlaceholder();
+    for (auto& [k, e] : g_entries) e.added = false;
+    Reconcile(); // reset shell state before restoring the selected mode, exactly once
 }
 
 void RedrawAll() {
@@ -577,7 +617,7 @@ void ShowMenu() {
         case ID_AUTOSTART: SetAutostart(!AutostartEnabled()); break;
         case ID_MODE_WIDGET: SetMode(true); break;
         case ID_MODE_TRAY: SetMode(false); break;
-        case ID_EXIT: DestroyWindow(g_hwnd); break;
+        case ID_EXIT: LogDrayLifecycle(L"EXIT_REQUEST(menu)"); DestroyWindow(g_hwnd); break;
         default:
             if (cmd >= ID_DEVICE_FIRST && cmd < ID_DEVICE_FIRST + keys.size()) {
                 const std::wstring& key = keys[cmd - ID_DEVICE_FIRST];
@@ -597,34 +637,6 @@ void ShowMenu() {
 // Unlike a disconnected peripheral, the receiver's HID interface is still present
 // in Windows. Retry missing receiver reports throughout the session, not just at
 // program startup. This avoids needing a manual "Refresh now" after a dropout.
-bool MissingLogitechReceiverReport(const std::vector<DeviceStatus>& devices) {
-    std::set<USHORT> receiverPids;
-    for (const HidColl& c : EnumHid()) {
-        if (c.vid != 0x046D || c.page() != 0xFF00) continue;
-        if ((c.usage() == 0x0001 && c.outLen() == 7) ||
-            (c.usage() == 0x0002 && c.outLen() == 20))
-            receiverPids.insert(c.pid);
-    }
-    for (USHORT pid : receiverPids) {
-        const std::wstring prefix = L"logi:" + Hex4(pid) + L":";
-        bool returned = false;
-        for (const DeviceStatus& device : devices) {
-            if (device.key.compare(0, prefix.size(), prefix) == 0) {
-                returned = true;
-                break;
-            }
-            for (const auto& source : device.sourceKeys)
-                if (source.compare(0, prefix.size(), prefix) == 0) {
-                    returned = true;
-                    break;
-                }
-            if (returned) break;
-        }
-        if (!returned) return true;
-    }
-    return false;
-}
-
 // Optional diagnostics. Writes nothing unless DRAYBATTERY_TRACE=1 is supplied
 // to this process, so normal builds have no recurring disk writes.
 void TracePoll(const std::vector<DeviceStatus>& statuses, bool missing, unsigned attempt, DWORD interval) {
@@ -661,47 +673,98 @@ void TracePoll(const std::vector<DeviceStatus>& statuses, bool missing, unsigned
 }
 
 DWORD WINAPI Worker(LPVOID) {
-    // Both startup and ongoing Logitech receiver misses get bounded retries.
-    unsigned completedStartupWaits = 0;
-    unsigned consecutiveMissingPolls = 0;
-    for (;;) {
-        auto* v = new std::vector<DeviceStatus>(PollAllDevices());
-        const bool missing = MissingLogitechReceiverReport(*v);
-        if (missing && consecutiveMissingPolls < 1000)
-            ++consecutiveMissingPolls;
-        else if (!missing)
-            consecutiveMissingPolls = 0;
-
-        DWORD interval = draybattery::PollIntervalMs(completedStartupWaits);
-        if (missing)
-            interval = std::min(interval,
-                (DWORD)draybattery::MissingReceiverRetryMs(consecutiveMissingPolls));
-
-        TracePoll(*v, missing, consecutiveMissingPolls, interval);
-        if (!PostMessageW(g_hwnd, WM_RESULTS, 0, (LPARAM)v)) delete v;
-        HANDLE hs[2] = { g_stopEvt, g_refreshEvt };
-        DWORD result = WaitForMultipleObjects(2, hs, FALSE, interval);
-        if (result == WAIT_OBJECT_0 || result == WAIT_FAILED) return 0;
-        if (result == WAIT_TIMEOUT && completedStartupWaits < 4)
-            ++completedStartupWaits;
+    unsigned fullPolls = 0, missingPolls = 0;
+    ULONGLONG nextFull = 0, nextHub = 0, nextRetry = 0;
+    std::vector<HidColl> inventory;
+    std::vector<std::wstring> present;
+    draybattery::LogitechPollTargets targets;
+    auto& hubLinks = targets.ghub;
+    auto& retryLinks = targets.retry;
+    unsigned inventoryGeneration = g_deviceGeneration.load();
+    while (!g_stopping.load()) {
+        try {
+            auto poll = std::make_unique<DevicePoll>();
+            poll->generation = g_deviceGeneration.load();
+            const auto now = GetTickCount64();
+            PollContext ctx;
+            ctx.stopEvent = g_stopEvt;
+            if (now >= nextFull || poll->generation != inventoryGeneration) {
+                PollAllDevices(ctx, g_stopEvt);
+                inventory = ctx.colls;
+                present = draybattery::logitech::Connections(inventory);
+                inventoryGeneration = poll->generation;
+                hubLinks.clear();
+                retryLinks.clear();
+                targets.Observe(ctx.out, present);
+                nextFull = GetTickCount64() + draybattery::PollIntervalMs(std::min(fullPolls, 4u));
+                if (fullPolls < 4) ++fullPolls;
+            } else {
+                poll->complete = false;
+                const bool hubDue = !hubLinks.empty() && now >= nextHub;
+                const bool retryDue = !retryLinks.empty() && now >= nextRetry;
+                std::vector<std::wstring> scope;
+                if (hubDue) scope = hubLinks;
+                if (retryDue) scope.insert(scope.end(), retryLinks.begin(), retryLinks.end());
+                ctx.colls = draybattery::logitech::SelectLinks(inventory, scope);
+                poll->polledConnections = draybattery::logitech::Connections(ctx.colls);
+                PollGHub(ctx);
+                if (retryDue) {
+                    // Only unresolved links are eligible for direct HID++. Never
+                    // accelerate Wolverine/Razer or other vendors with this retry.
+                    for (const auto& id : hubLinks) ctx.logitechClaimed.insert(id);
+                    PollLogitech(ctx);
+                }
+                PollLogitechCache(ctx);
+                targets.Observe(ctx.out, poll->polledConnections);
+                if (hubDue) nextHub = 0;
+                if (retryDue) nextRetry = 0;
+            }
+            const auto finished = GetTickCount64();
+            if (poll->complete || !nextHub) nextHub = finished + draybattery::kGHubRefreshMs;
+            if (retryLinks.empty()) missingPolls = 0;
+            else if (poll->complete || !nextRetry) {
+                if (missingPolls < 1000) ++missingPolls;
+                nextRetry = finished + draybattery::MissingReceiverRetryMs(missingPolls);
+            }
+            poll->devices = std::move(ctx.out);
+            poll->presentConnections = present;
+            poll->inventoryComplete = ctx.inventoryComplete;
+            g_workerProgress.store(finished);
+            TracePoll(poll->devices, !retryLinks.empty(), missingPolls,
+                      (DWORD)draybattery::MissingReceiverRetryMs(missingPolls));
+            if (g_stopping.load()) break;
+            if (PostMessageW(g_hwnd, WM_RESULTS, 0, (LPARAM)poll.get())) poll.release();
+            else LogDrayLifecycle(L"RESULTS_POST_FAILED");
+        } catch (...) {
+            LogDrayLifecycle(L"WORKER_EXCEPTION");
+            nextFull = GetTickCount64() + 30000;
+            nextHub = nextRetry = nextFull;
+        }
+        const DWORD wait = draybattery::WorkerWaitMs(GetTickCount64(), nextFull,
+            nextHub, !hubLinks.empty(), nextRetry, !retryLinks.empty());
+        HANDLE events[2] = {g_stopEvt, g_refreshEvt};
+        const DWORD result = WaitForMultipleObjects(2, events, FALSE, wait);
+        if (result == WAIT_OBJECT_0) break;
+        if (result == WAIT_FAILED) { LogDrayLifecycle(L"WORKER_WAIT_FAILED"); break; }
+        if (result == WAIT_OBJECT_0 + 1) nextFull = 0;
     }
+    LogDrayLifecycle(L"WORKER_STOPPED");
+    return 0;
 }
-
 void RefreshSoon(UINT ms) { SetTimer(g_hwnd, TIMER_DEBOUNCE, ms, nullptr); }
 
 LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == g_taskbarCreatedMsg && msg != 0) {  // Explorer restarted
+        LogDrayLifecycle(L"EXPLORER_TASKBAR_CREATED");
         widget::Destroy();
         g_useWidget = false;
         ReAddAll();
-        Reconcile();
         return 0;
     }
     switch (msg) {
         case WM_RESULTS: {
-            auto* v = reinterpret_cast<std::vector<DeviceStatus>*>(lp);
-            OnResults(*v);
-            delete v;
+            std::unique_ptr<DevicePoll> poll(reinterpret_cast<DevicePoll*>(lp));
+            if (poll) OnResults(*poll);
             return 0;
         }
         case WM_NOTIFY: {
@@ -724,17 +787,27 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if(g_refreshEvt) SetEvent(g_refreshEvt);
             return 0;
         case WM_ENDSESSION:  // sign-out / shutdown / installer restart manager
-            if (wp) DestroyWindow(h);
+            if (wp) { LogDrayLifecycle(L"ENDSESSION"); DestroyWindow(h); }
+            return 0;
+        case WM_CLOSE:
+            LogDrayLifecycle(L"EXIT_REQUEST(close)");
+            DestroyWindow(h);
             return 0;
         case WM_DEVICECHANGE:
-            if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) RefreshSoon(2500);
+            if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
+                ++g_deviceGeneration;
+                if (wp == DBT_DEVICEREMOVECOMPLETE) RemoveAbsentReceivers();
+                RefreshSoon(2500);
+            }
             return TRUE;
         case WM_POWERBROADCAST:
-            if (wp == PBT_APMRESUMEAUTOMATIC) RefreshSoon(5000);
+            if (wp == PBT_APMRESUMEAUTOMATIC) { ++g_deviceGeneration; RefreshSoon(5000); }
             return TRUE;
         case WM_TIMER:
+            if (g_stopping.load()) return 0;
             if (wp == TIMER_DEBOUNCE) { KillTimer(h, TIMER_DEBOUNCE); SetEvent(g_refreshEvt); }
             if (wp == TIMER_WIDGET) Reconcile();
+            if (wp == TIMER_BATTERY && g_batteries.Expire(GetTickCount64())) SyncBatteryView();
             return 0;
         case WM_SETTINGCHANGE:
             if (lp && !lstrcmpW((LPCWSTR)lp, L"ImmersiveColorSet")) {
@@ -743,16 +816,21 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_DESTROY:
-            LogDrayLifecycle(L"EXIT(normal)");
+            LogDrayLifecycle(L"STOP_REQUESTED");
+            g_stopping.store(true);
             KillTimer(h, TIMER_WIDGET);
+            KillTimer(h, TIMER_BATTERY);
+            KillTimer(h, TIMER_DEBOUNCE);
             widget::Destroy();
             SetEvent(g_stopEvt);
-            if (g_worker) WaitForSingleObject(g_worker, 5000);
             for (auto& [k, e] : g_entries) {
                 if (e.added) TrayDelete(e.uid);
                 if (e.icon) DestroyIcon(e.icon);
             }
+            g_entries.clear();
             if (g_placeholder) TrayDelete(PLACEHOLDER_ID);
+            g_placeholder = false;
+            if (g_placeholderIcon) { DestroyIcon(g_placeholderIcon); g_placeholderIcon = nullptr; }
             PostQuitMessage(0);
             return 0;
     }
@@ -804,6 +882,12 @@ int ListToConsole(bool dump, bool identify = false, bool info = false, bool upda
 
 }  // namespace
 
+LONG WINAPI LogUnhandledFailure(EXCEPTION_POINTERS* exception) {
+    LogDrayLifecycleCode(L"UNHANDLED_EXCEPTION", exception && exception->ExceptionRecord ?
+        exception->ExceptionRecord->ExceptionCode : 0);
+    return EXCEPTION_CONTINUE_SEARCH; // preserve Windows error reporting
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     if (cmdLine && wcsstr(cmdLine, L"--xbox-refresh")) {
         int result = RunWolverineXboxRefresh();
@@ -835,8 +919,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     }
     g_inst = inst;
 
+    SetUnhandledExceptionFilter(LogUnhandledFailure);
     HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\DrayBatteryTray");
-    if (GetLastError() == ERROR_ALREADY_EXISTS) return 0;
+    const DWORD mutexError = GetLastError();
+    if (!mutex) { LogDrayLifecycleCode(L"START_FAILED(mutex)", mutexError); return 1; }
+    if (mutexError == ERROR_ALREADY_EXISTS) {
+        LogDrayLifecycle(L"EXIT(already_running)"); CloseHandle(mutex); return 0;
+    }
     LogDrayLifecycle(L"START");
 
     g_lightTaskbar = ReadLightTaskbar();
@@ -848,34 +937,78 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     wc.lpfnWndProc = WndProc;
     wc.hInstance = inst;
     wc.lpszClassName = L"DrayBatteryWnd";
-    RegisterClassExW(&wc);
+    if (!RegisterClassExW(&wc)) {
+        LogDrayLifecycleCode(L"START_FAILED(class)", GetLastError()); CloseHandle(mutex); return 1;
+    }
     // A hidden top-level window (not message-only) so it receives the TaskbarCreated broadcast.
     g_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, kAppName, WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, inst, nullptr);
-    if (!g_hwnd) { LogDrayLifecycle(L"START_FAILED(window)"); return 1; }
+    if (!g_hwnd) { LogDrayLifecycleCode(L"START_FAILED(window)", GetLastError()); CloseHandle(mutex); return 1; }
 
     DEV_BROADCAST_DEVICEINTERFACE_W filter{ sizeof(filter) };
     filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
     filter.dbcc_classguid = GUID_DEVINTERFACE_HID;
     HDEVNOTIFY notify = RegisterDeviceNotificationW(g_hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+    if (!notify) LogDrayLifecycleCode(L"DEVICE_NOTIFY_FAILED", GetLastError());
 
     g_refreshEvt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_stopEvt = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!g_refreshEvt || !g_stopEvt) {
+        LogDrayLifecycleCode(L"START_FAILED(events)", GetLastError());
+        DestroyWindow(g_hwnd);
+        if (notify) UnregisterDeviceNotification(notify);
+        if (g_refreshEvt) CloseHandle(g_refreshEvt);
+        if (g_stopEvt) CloseHandle(g_stopEvt);
+        CloseHandle(mutex);
+        return 1;
+    }
     g_wantWidget = LoadWidgetMode();
     LoadHidden();
     Reconcile();
     UpdatePlaceholder();  // something to click on until the first poll finishes
-    SetTimer(g_hwnd, TIMER_WIDGET, 1000, nullptr);
-    g_worker = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
+    int exitCode = 0;
+    if (!SetTimer(g_hwnd, TIMER_WIDGET, 1000, nullptr)) {
+        LogDrayLifecycleCode(L"START_FAILED(timer)", GetLastError());
+        exitCode = 1;
+        DestroyWindow(g_hwnd);
+    } else {
+        g_workerProgress.store(GetTickCount64());
+        g_worker = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
+        if (!g_worker) {
+            LogDrayLifecycleCode(L"START_FAILED(worker)", GetLastError());
+            exitCode = 1;
+            DestroyWindow(g_hwnd);
+        }
+    }
 
-    MSG m;
-    while (GetMessageW(&m, nullptr, 0, 0) > 0) {
+    MSG m{};
+    BOOL messageResult;
+    while ((messageResult = GetMessageW(&m, nullptr, 0, 0)) > 0) {
         TranslateMessage(&m);
         DispatchMessageW(&m);
     }
+    if (messageResult == -1) {
+        exitCode = 1;
+        LogDrayLifecycleCode(L"MESSAGE_LOOP_FAILED", GetLastError());
+        if (IsWindow(g_hwnd)) DestroyWindow(g_hwnd);
+    }
+    // Keep synchronization handles and C++ globals alive until the producer
+    // has stopped. Closing its handle after an unchecked 5-second wait was unsafe.
+    g_stopping.store(true);
+    SetEvent(g_stopEvt);
+    if (g_worker) {
+        if (WaitForSingleObject(g_worker, 5000) == WAIT_TIMEOUT) {
+            LogDrayLifecycle(L"STOP_WAITING_FOR_DRIVER");
+            WaitForSingleObject(g_worker, INFINITE);
+        }
+        CloseHandle(g_worker);
+    }
     // drain results posted after shutdown started
-    while (PeekMessageW(&m, nullptr, WM_RESULTS, WM_RESULTS, PM_REMOVE)) delete reinterpret_cast<std::vector<DeviceStatus>*>(m.lParam);
+    while (PeekMessageW(&m, nullptr, WM_RESULTS, WM_RESULTS, PM_REMOVE)) delete reinterpret_cast<DevicePoll*>(m.lParam);
     if (notify) UnregisterDeviceNotification(notify);
-    if (g_worker) CloseHandle(g_worker);
+    CloseHandle(g_refreshEvt);
+    CloseHandle(g_stopEvt);
     ReleaseMutex(mutex);
-    return 0;
+    CloseHandle(mutex);
+    LogDrayLifecycle(exitCode ? L"EXIT(failure)" : L"EXIT(normal)");
+    return exitCode;
 }

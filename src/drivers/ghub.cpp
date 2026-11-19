@@ -6,7 +6,10 @@
 #include "ghub_json.h"
 #include "ghub_status.h"
 #include "logitech_cache.h"
+#include "logitech_transport.h"
+#include "../battery_lifecycle.h"
 #include <winhttp.h>
+#include <cfgmgr32.h>
 #include <algorithm>
 #include <cctype>
 #include <string>
@@ -64,10 +67,11 @@ public:
         return true;
     }
 
-    bool ReceiveOne(std::string& message) {
+    bool ReceiveOne(std::string& message, ULONGLONG deadline) {
         message.clear();
         // The device inventory is about 28 KiB; bound all responses to 1 MiB.
         for (unsigned fragment = 0; fragment < 128; ++fragment) {
+            if (GetTickCount64() >= deadline) return false;
             char buffer[8192];
             DWORD received = 0;
             WINHTTP_WEB_SOCKET_BUFFER_TYPE type{};
@@ -95,9 +99,10 @@ public:
         if (result != NO_ERROR) return false;
 
         // G HUB first sends an unsolicited OPTIONS / hello. Correlate msgId.
-        for (int attempt = 0; attempt < 8; ++attempt) {
+        const ULONGLONG deadline = GetTickCount64() + 1500;
+        for (int attempt = 0; attempt < 8 && GetTickCount64() < deadline; ++attempt) {
             std::string incoming;
-            if (!ReceiveOne(incoming)) return false;
+            if (!ReceiveOne(incoming, deadline)) return false;
             ghubjson::Value root;
             if (!ghubjson::Parser(incoming).parse(root)) continue;
             const auto* requestId = root.get("msgId");
@@ -147,6 +152,32 @@ const ghubjson::Value* Payload(const ghubjson::Value& result) {
     const auto* p = result.get("payload");
     return p && p->type == ghubjson::Value::Object ? p : nullptr;
 }
+std::wstring MatchPresentLink(const std::vector<HidColl>& colls,
+                              const std::wstring& path, USHORT pid) {
+    auto link = draybattery::logitech::MatchLink(colls, path, pid);
+    if (!link.empty()) return link;
+
+    // G HUB may use an MI_xx that exposes no enumerated HID collection.
+    // Resolve that exact present interface and walk to its physical USB parent.
+    // NORMAL excludes nonpresent nodes; never use PHANTOM or CANCELREMOVE.
+    auto nodePath = draybattery::logitech::GHubNodePath(path);
+    if (nodePath.rfind(L"usb\\vid_046d&pid_", 0) != 0) return L"";
+    DEVINST node = 0;
+    if (CM_Locate_DevNodeW(&node, nodePath.data(), CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS)
+        return L"";
+    for (int depth = 0; depth < 12; ++depth) {
+        wchar_t id[MAX_DEVICE_ID_LEN]{};
+        if (CM_Get_Device_IDW(node, id, MAX_DEVICE_ID_LEN, 0) != CR_SUCCESS) break;
+        auto ancestor = draybattery::logitech::NormalizePath(id);
+        if (ancestor.rfind(L"usb\\vid_", 0) == 0 &&
+            ancestor.substr(0, ancestor.find(L'\\', 4)).find(L"&mi_") == std::wstring::npos)
+            return draybattery::logitech::MatchLink(colls, path, pid, ancestor);
+        DEVINST parent = 0;
+        if (CM_Get_Parent(&parent, node, 0) != CR_SUCCESS) break;
+        node = parent;
+    }
+    return L"";
+}
 } // namespace
 
 void PollGHub(PollContext& ctx) {
@@ -171,12 +202,31 @@ void PollGHub(PollContext& ctx) {
         devices = payload->get("devices");
     if (!devices || devices->type != ghubjson::Value::Array) return;
 
-    std::map<USHORT, unsigned> indexByReceiver;
-    // An explicit NOT_CONNECTED state supersedes last-known percentages.
-    // Defer it until all ACTIVE/SLEEPING siblings have been handled; one
-    // receiver PID can enumerate multiple G HUB logical entries.
-    std::map<USHORT, DeviceStatus> offlineByReceiver;
+    // A slot-1 alias is valid only for a unique device on the exact receiver.
+    // G HUB inventory order is not a HID++ slot number.
+    std::map<std::wstring, std::set<std::string>> unitsByLink;
+    std::vector<std::wstring> deviceLinks(devices->array.size());
+    size_t deviceIndex = 0;
+    for (const auto& device : devices->array) {
+        if (ctx.Stopping()) return;
+        auto& link = deviceLinks[deviceIndex++];
+        const auto* path = device.get("path");
+        const auto* id = device.get("id");
+        const auto* state = device.get("state");
+        const auto* connection = device.get("connectionType");
+        USHORT pid = 0;
+        if (!path || !id || !state || !SafeId(id->str()) ||
+            (connection && connection->str() == "WIRED") ||
+            !draybattery::ghub::ParseDeviceState(state->str()).known || !ReceiverPid(path->str(), pid)) continue;
+        link = MatchPresentLink(ctx.colls, Widen(path->str()), pid);
+        const auto* signature = device.get("deviceSignature");
+        if (!link.empty()) unitsByLink[link].insert(signature && !signature->str().empty() ? signature->str() : id->str());
+    }
+    const ULONGLONG pollDeadline = GetTickCount64() + 4000;
+    deviceIndex = 0;
     for (const ghubjson::Value& device : devices->array) {
+        const auto& link = deviceLinks[deviceIndex++];
+        if (ctx.Stopping() || GetTickCount64() >= pollDeadline) break;
         const auto* state = device.get("state");
         const auto* connection = device.get("connectionType");
         const auto* path = device.get("path");
@@ -189,57 +239,23 @@ void PollGHub(PollContext& ctx) {
         if (!path || !identifier || !SafeId(identifier->str())) continue;
 
         USHORT pid = 0;
-        if (!ReceiverPid(path->str(), pid) || ctx.IsClaimed(0x046D, pid))
-            continue;
+        if (!ReceiverPid(path->str(), pid)) continue;
         // G HUB can retain old devices after their USB dongle was unplugged.
         // Only retain asleep readings while this actual receiver is present.
-        bool receiverPresent = false;
-        for (const HidColl& c : ctx.colls) {
-            if (c.vid == 0x046D && c.pid == pid &&
-                c.page() == 0xFF00) { receiverPresent = true; break; }
-        }
-        if (!receiverPresent) continue;
-
-        if (!currentState.connected) {
-            DeviceStatus offline;
-            offline.key = L"logi:" + Hex4(pid) + L":1";
-            const auto* display = device.get("displayName");
-            if ((!display || display->str().empty()) && device.get("extendedDisplayName"))
-                display = device.get("extendedDisplayName");
-            offline.name = L"Logitech " + (display ? Widen(display->str()) : L"device");
-            const auto* signature = device.get("deviceSignature");
-            if (signature && !signature->str().empty() && signature->str().size() < 160)
-                offline.physicalId = L"logitech:" + Widen(signature->str());
-            const auto* kind = device.get("deviceType");
-            const std::string type = kind ? kind->str() : "";
-            offline.kind = type == "KEYBOARD" ? DeviceKind::Keyboard :
-                           type == "MOUSE" ? DeviceKind::Mouse :
-                           type == "HEADSET" ? DeviceKind::Headset :
-                           type == "GAMEPAD" ? DeviceKind::Gamepad : DeviceKind::Other;
-            offline.connected = false;
-            offline.asleep = false;
-            offline.percent = -1; // Never pass a disconnected cached reading as live.
-            offline.graceSec = 0;
-            offline.via = L"Logitech G HUB (disconnected)";
-            offlineByReceiver.emplace(pid, std::move(offline));
-            continue;
-        }
+        if (link.empty()) continue;
 
         ghubjson::Value battery;
-        if (!socket.Get("/battery/" + identifier->str() + "/state", battery))
-            continue;
-        const auto* info = Payload(battery);
-        if (!info) continue;
-        const auto* percentage = info->get("percentage");
-        int percent = percentage ? percentage->integer() : -1;
-        if (percent < 0 || percent > 100) continue;
-        const auto* removed = info->get("isBatteryRemoved");
-        if (removed && removed->type == ghubjson::Value::Boolean && removed->boolean)
-            continue;
+        const ghubjson::Value* info = nullptr;
+        if (currentState.connected && !currentState.asleep &&
+            socket.Get("/battery/" + identifier->str() + "/state", battery)) info = Payload(battery);
 
         DeviceStatus reading;
-        reading.key = L"logi:" + Hex4(pid) + L":" +
-            std::to_wstring(++indexByReceiver[pid]);
+        reading.connectionId = link;
+        reading.receiverBacked = true;
+        reading.ghub = true;
+        reading.key = unitsByLink[link].size() == 1 ? draybattery::logitech::SlotKey(link, 1) :
+            L"logi:" + link + L":ghub:" + Widen(identifier->str());
+        reading.sourceKeys = {reading.key};
         const auto* name = device.get("displayName");
         if ((!name || name->str().empty()) && device.get("extendedDisplayName"))
             name = device.get("extendedDisplayName");
@@ -249,24 +265,15 @@ void PollGHub(PollContext& ctx) {
             deviceSignature->str().size() < 160)
             reading.physicalId = L"logitech:" + Widen(deviceSignature->str());
         reading.via = L"Logitech G HUB (local)";
-        reading.graceSec = 1800;
-        reading.percent = percent;
-        reading.asleep = currentState.asleep; // SLEEPING only, not NOT_CONNECTED.
-        const auto* charging = info->get("charging");
-        reading.charging = charging && charging->type == ghubjson::Value::Boolean && charging->boolean;
+        reading.graceSec = (int)(draybattery::kReceiverDisplayTtlMs / 1000);
+        draybattery::ghub::ApplyBatteryState(reading, currentState, info, GetTickCount64());
         const auto* kind = device.get("deviceType");
         std::string type = kind ? kind->str() : "";
         reading.kind = type == "KEYBOARD" ? DeviceKind::Keyboard :
                        type == "MOUSE" ? DeviceKind::Mouse :
                        type == "HEADSET" ? DeviceKind::Headset :
                        type == "GAMEPAD" ? DeviceKind::Gamepad : DeviceKind::Other;
-        SaveLogitechBattery(pid, reading);
+        ctx.logitechClaimed.insert(link); // no direct HID++ contention during radio sleep
         ctx.Add(reading, 0x046D, pid);
-    }
-    // Explicit disconnected reports must prevent a 3-day Logitech cache from
-    // creating an apparent live device simply because the receiver is present.
-    for (auto& [pid, offline] : offlineByReceiver) {
-        if (!ctx.IsClaimed(0x046D, pid))
-            ctx.Add(offline, 0x046D, pid);
     }
 }

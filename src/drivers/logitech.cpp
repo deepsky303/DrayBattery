@@ -10,6 +10,8 @@
 // References: Logitech HID++ 2.0 specification drafts, github.com/pwr-Solaar/Solaar,
 // github.com/Sapd/HeadsetControl (headset voltage calibration).
 #include "drivers.h"
+#include "logitech_transport.h"
+#include "../battery_lifecycle.h"
 
 #include <cwctype>
 #include <optional>
@@ -121,6 +123,7 @@ bool ReadBattery20(Hidpp& h, BYTE idx, USHORT pid, DeviceStatus& s) {
                 s.percent = soc;
             } else if (level) {
                 s.percent = (level & 8) ? 100 : (level & 4) ? 60 : (level & 2) ? 20 : 5;
+                s.approximate = true; // category, never an exact invented percentage
                 s.levelText = (level & 8) ? L"Full" : (level & 4) ? L"Good" : (level & 2) ? L"Low" : L"Critical";
             }
             s.charging = st == 1 || st == 2 || st == 3;
@@ -132,7 +135,6 @@ bool ReadBattery20(Hidpp& h, BYTE idx, USHORT pid, DeviceStatus& s) {
             int st = p[2];
             s.charging = st >= 1 && st <= 4;
             s.percent = p[0] <= 100 ? p[0] : -1;
-            if (s.percent == 0 && st == 3) s.percent = 100;
             return true;
         }
     }
@@ -191,6 +193,7 @@ bool ReadBattery10(Hidpp& h, BYTE idx, DeviceStatus& s) {
     if (h.Request(idx, 0x81, 0x07, {}, p, err, true) == 1 && p.size() >= 2 && p[0]) {
         static const int pct[] = { 0, 5, 10, 20, 35, 50, 75, 100 };
         s.percent = pct[p[0] > 7 ? 7 : p[0]];
+        s.approximate = true;
         s.levelText = p[0] >= 7 ? L"Full" : p[0] >= 5 ? L"Good" : p[0] >= 3 ? L"Low" : L"Critical";
         s.charging = p[1] >= 0x21 && p[1] <= 0x26;
         return true;
@@ -201,11 +204,19 @@ bool ReadBattery10(Hidpp& h, BYTE idx, DeviceStatus& s) {
 }  // namespace
 
 void PollLogitech(PollContext& ctx) {
-    for (auto [vid, pid] : ctx.Products(0x046D)) {
-        auto shorts = ctx.Find(vid, pid, [](const HidColl& c) { return c.page() == 0xFF00 && c.usage() == 0x0001 && c.outLen() == 7; });
-        auto longs = ctx.Find(vid, pid, [](const HidColl& c) {
-            return ((c.page() == 0xFF00 && c.usage() == 0x0002) || (c.page() == 0xFF43 && c.usage() == 0x0202)) && c.outLen() == 20;
-        });
+    std::map<std::wstring, std::vector<const HidColl*>> links;
+    for (const auto& c : ctx.colls)
+        if (draybattery::logitech::IsHidpp(c)) links[draybattery::logitech::LinkId(c)].push_back(&c);
+    for (const auto& [link, collections] : links) {
+        if (ctx.Stopping()) return;
+        if (ctx.logitechClaimed.count(link)) continue;
+        const USHORT vid = 0x046D, pid = collections.front()->pid;
+        std::vector<const HidColl*> shorts, longs;
+        for (const auto* c : collections) {
+            if (c->outLen() == 7) shorts.push_back(c);
+            else longs.push_back(c);
+        }
+        // Different receivers with the same PID are queried separately.
         if (shorts.empty() && longs.empty()) continue;
         Hidpp h;
         if (!h.Open(shorts.empty() ? nullptr : shorts[0], longs.empty() ? nullptr : longs[0])) continue;
@@ -225,11 +236,15 @@ void PollLogitech(PollContext& ctx) {
 
         bool any = false;
         for (BYTE idx : indices) {
+            if (ctx.Stopping()) return;
             DeviceStatus s;
-            s.key = L"logi:" + Hex4(pid) + L":" + std::to_wstring(idx);
+            s.key = draybattery::logitech::SlotKey(link, idx);
+            s.connectionId = link;
+            s.receiverBacked = idx != 0xFF;
+            s.sourceKeys = {s.key};
             s.name = (idx == 0xFF && !product.empty()) ? product : L"Logitech wireless device";
             s.via = idx == 0xFF ? L"USB / Bluetooth" : L"Logitech receiver";
-            s.graceSec = idx == 0xFF ? 0 : 1800;  // receiver devices drop off the link while sleeping
+            s.graceSec = idx == 0xFF ? 0 : (int)(draybattery::kReceiverDisplayTtlMs / 1000);
             s.kind = GuessKind(s.name);
 
             int r = h.Request(idx, 0x00, 0x10 | kSwId, { 0, 0, 0x5A }, p, err, false, 400);
@@ -242,6 +257,7 @@ void PollLogitech(PollContext& ctx) {
                 found = ReadBattery10(h, idx, s);
             }
             if (found) {
+                if (s.percent >= 0) s.lastLiveMs = GetTickCount64();
                 if (s.kind == DeviceKind::Other) s.kind = GuessKind(s.name);
                 ctx.out.push_back(s);
                 any = true;

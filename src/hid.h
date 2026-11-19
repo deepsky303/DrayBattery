@@ -18,6 +18,9 @@
 
 struct HidColl {
     std::wstring path;
+    std::wstring connectionId; // USB ancestor instance, or device container for BT
+    std::wstring containerId;
+    std::vector<std::wstring> instanceIds; // interface + ancestors, for G HUB path matching
     USHORT vid = 0, pid = 0;
     int iface = -1;  // USB interface number (MI_xx in the path), -1 when unknown
     HIDP_CAPS caps{};
@@ -28,7 +31,7 @@ struct HidColl {
     USHORT featLen() const { return caps.FeatureReportByteLength; }
 };
 
-std::vector<HidColl> EnumHid();
+std::vector<HidColl> EnumHid(bool* complete = nullptr);
 
 class HidDev {
 public:

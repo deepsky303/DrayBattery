@@ -163,12 +163,13 @@ void PollBluetooth(PollContext& ctx) {
         if (mc != containerConn.end() ? !mc->second : !f.connected) continue;
         DeviceStatus s;
         s.key = L"bt:" + cid;
+        s.connectionId = L"container:" + cid;
         auto it = containerName.find(cid);
         s.name = (it != containerName.end() && !it->second.empty()) ? it->second : f.name;
         if (s.name.empty()) s.name = L"Bluetooth device";
         // Skip devices a vendor driver already reported over HID++ / Bragi on the same link.
         bool dup = false;
-        for (auto& o : ctx.out) dup |= o.name == s.name;
+        for (auto& o : ctx.out) dup |= o.connectionId == s.connectionId;
         if (dup) continue;
         s.via = L"Bluetooth";
         s.percent = f.pct;

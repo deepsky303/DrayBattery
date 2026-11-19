@@ -274,6 +274,7 @@ bool Create(HINSTANCE inst, HWND notifyWnd, UINT clickMsg, bool lightTheme) {
         SendMessageW(g_tip, TTM_SETMAXTIPWIDTH, 0, 600);
     }
     g_lastDpi = Dpi();
+    g_tipText.clear(); // the new tooltip does not contain the previous window's text
     Paint();
     g_lastW = -1;
     Reposition();
@@ -298,6 +299,13 @@ void Destroy() {
 bool Alive() { return g_wnd && IsWindow(g_wnd) && g_taskbar && IsWindow(g_taskbar); }
 
 void SetItems(const std::vector<WidgetItem>& items, const std::wstring& tooltip) {
+    bool same = g_items.size() == items.size();
+    for (size_t i = 0; same && i < items.size(); ++i) {
+        const auto& a = g_items[i];
+        const auto& b = items[i];
+        same = a.kind == b.kind && a.percent == b.percent && a.text == b.text &&
+               a.charging == b.charging && a.dim == b.dim && a.low == b.low && a.bluetooth == b.bluetooth;
+    }
     g_items = items;
     if (tooltip != g_tipText && g_tip) {
         g_tipText = tooltip;
@@ -307,8 +315,7 @@ void SetItems(const std::vector<WidgetItem>& items, const std::wstring& tooltip)
         ti.lpszText = const_cast<wchar_t*>(g_tipText.c_str());
         SendMessageW(g_tip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
     }
-    Paint();
-    Reposition();
+    if (!same) { Paint(); Reposition(); }
 }
 
 void SetLightTheme(bool light) {

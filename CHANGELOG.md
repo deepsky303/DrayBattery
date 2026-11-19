@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.11
+
+- Restored short dimmed last-known battery indicators for sleeping Logitech G903/G915 devices: 90-second maximum from the most recent verified live measurement. Repeated cached/sleeping messages do not renew the timer. Receiver removal hides the indicator immediately.
+- Fixed physical Logitech receiver matching across G HUB USB path numeric suffixes and different USB MI interfaces. Verified both G903 and G915 X through local G HUB repeatedly, without falling back to unreliable PID-only matching.
+- Improved handling of identical Logitech receiver product IDs and HID++/G HUB source transitions; eliminated obsolete three-day registry cache resurrection and fictitious 100% readings.
+- Reduced unnecessary polling and HID contention through separate local G HUB refresh; hardened Explorer/taskbar widget recreation, tray icon registration, startup/exit logging, and worker shutdown.
+- Added lifecycle, Logitech driver, G HUB PnP matching, scheduling, and identity regression tests (nine MSVC test programs). GUI widget recreation and ordinary startup were smoke-tested on the developer's Windows 11 system.
+- Physical mouse sleep/wake and receiver removal still require observation in normal use; synthetic tests cover these transitions.
+
 ## 0.1.10
 
 - Fixed a Logitech G HUB ghost-device condition: NOT_CONNECTED now means disconnected, not asleep. G HUB explicitly disconnected devices invalidate their own stale cached indicators immediately.

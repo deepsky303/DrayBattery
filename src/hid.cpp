@@ -1,35 +1,79 @@
 #include "hid.h"
 
 #include <setupapi.h>
+#include <cfgmgr32.h>
+#include <devpkey.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <cwctype>
 
-std::vector<HidColl> EnumHid() {
+std::vector<HidColl> EnumHid(bool* complete) {
+    if (complete) *complete = false;
     std::vector<HidColl> out;
     GUID hidGuid;
     HidD_GetHidGuid(&hidGuid);
     HDEVINFO di = SetupDiGetClassDevsW(&hidGuid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
     if (di == INVALID_HANDLE_VALUE) return out;
     SP_DEVICE_INTERFACE_DATA ifd{ sizeof(ifd) };
-    for (DWORD i = 0; SetupDiEnumDeviceInterfaces(di, nullptr, &hidGuid, i, &ifd); i++) {
+    bool all = true;
+    for (DWORD i = 0;; i++) {
+        if (!SetupDiEnumDeviceInterfaces(di, nullptr, &hidGuid, i, &ifd)) {
+            all = all && GetLastError() == ERROR_NO_MORE_ITEMS;
+            break;
+        }
         DWORD need = 0;
         SetupDiGetDeviceInterfaceDetailW(di, &ifd, nullptr, 0, &need, nullptr);
-        if (!need) continue;
+        if (!need) { all = false; continue; }
         std::vector<BYTE> buf(need);
         auto det = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buf.data());
         det->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
-        if (!SetupDiGetDeviceInterfaceDetailW(di, &ifd, det, need, nullptr, nullptr)) continue;
+        SP_DEVINFO_DATA dd{ sizeof(dd) };
+        if (!SetupDiGetDeviceInterfaceDetailW(di, &ifd, det, need, nullptr, &dd)) { all = false; continue; }
         HANDLE h = CreateFileW(det->DevicePath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-        if (h == INVALID_HANDLE_VALUE) continue;
+        if (h == INVALID_HANDLE_VALUE) { all = false; continue; }
         HidColl c;
         c.path = det->DevicePath;
+        GUID container{};
+        DEVPROPTYPE type = 0;
+        if (SetupDiGetDevicePropertyW(di, &dd, &DEVPKEY_Device_ContainerId, &type,
+                (PBYTE)&container, sizeof(container), nullptr, 0) && type == DEVPROP_TYPE_GUID) {
+            wchar_t text[64]{};
+            if (container != GUID_NULL && StringFromGUID2(container, text, 64))
+                c.containerId = text;
+        }
+        DEVINST node = dd.DevInst;
+        for (int depth = 0; depth < 12; ++depth) {
+            wchar_t id[MAX_DEVICE_ID_LEN]{};
+            if (CM_Get_Device_IDW(node, id, MAX_DEVICE_ID_LEN, 0) != CR_SUCCESS) break;
+            std::wstring normalized = id;
+            for (auto& ch : normalized) ch = (wchar_t)towlower(ch);
+            c.instanceIds.push_back(normalized);
+            if (normalized.rfind(L"bth", 0) == 0) {
+                c.connectionId = c.containerId.empty() ? normalized : L"container:" + c.containerId;
+                break; // a Bluetooth adapter is not this peripheral's receiver
+            }
+            if (normalized.rfind(L"usb\\vid_", 0) == 0 &&
+                normalized.substr(0, normalized.find(L'\\', 4)).find(L"&mi_") == std::wstring::npos) {
+                c.connectionId = normalized;
+                break;
+            }
+            DEVINST parent = 0;
+            if (CM_Get_Parent(&parent, node, 0) != CR_SUCCESS) break;
+            node = parent;
+        }
+        if (c.connectionId.empty() && !c.containerId.empty())
+            c.connectionId = L"container:" + c.containerId;
+        if (c.connectionId.empty()) c.connectionId = c.path;
         HIDD_ATTRIBUTES a{ sizeof(a) };
         if (HidD_GetAttributes(h, &a)) { c.vid = a.VendorID; c.pid = a.ProductID; }
+        else all = false;
         PHIDP_PREPARSED_DATA pp;
-        if (HidD_GetPreparsedData(h, &pp)) { HidP_GetCaps(pp, &c.caps); HidD_FreePreparsedData(pp); }
+        if (HidD_GetPreparsedData(h, &pp)) {
+            if (HidP_GetCaps(pp, &c.caps) != HIDP_STATUS_SUCCESS) all = false;
+            HidD_FreePreparsedData(pp);
+        } else all = false;
         CloseHandle(h);
         std::wstring lower = c.path;
         for (auto& ch : lower) ch = towlower(ch);
@@ -38,6 +82,7 @@ std::vector<HidColl> EnumHid() {
         out.push_back(std::move(c));
     }
     SetupDiDestroyDeviceInfoList(di);
+    if (complete) *complete = all;
     return out;
 }
 

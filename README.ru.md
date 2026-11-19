@@ -73,8 +73,8 @@
 
 | Файл | Для чего |
 |:---|:---|
-| **[Установщик Windows](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.10-setup.exe`) | Установка для текущего пользователя, ярлык в «Пуск», необязательный ярлык на рабочем столе, штатное удаление |
-| **[Портативная версия](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.10-portable.zip`) | Распаковать и запустить `DrayBattery.exe` без установки |
+| **[Установщик Windows](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.11-setup.exe`) | Установка для текущего пользователя, ярлык в «Пуск», необязательный ярлык на рабочем столе, штатное удаление |
+| **[Портативная версия](https://github.com/deepsky303/DrayBattery/releases/latest)** (`DrayBattery-0.1.11-portable.zip`) | Распаковать и запустить `DrayBattery.exe` без установки |
 | [Исходный код](https://github.com/deepsky303/DrayBattery) | Изучение исходников, самостоятельная сборка, доработки |
 
 Установщик не требует прав администратора. **Автозапуск изначально отключён** — включается вручную через контекстное меню. Драйверы устройств не устанавливаются и не заменяются.

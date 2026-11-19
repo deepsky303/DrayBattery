@@ -13,6 +13,10 @@ struct PollContext {
     std::vector<HidColl> colls;
     std::set<std::pair<USHORT, USHORT>> claimed;
     std::vector<DeviceStatus> out;
+    std::set<std::wstring> logitechClaimed; // physical transport instances, not PID
+    bool inventoryComplete = true;
+    HANDLE stopEvent = nullptr;
+    bool Stopping() const { return stopEvent && WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0; }
 
     bool IsClaimed(USHORT vid, USHORT pid) const { return claimed.count({ vid, pid }) != 0; }
     void Claim(USHORT vid, USHORT pid) { claimed.insert({ vid, pid }); }
@@ -36,6 +40,8 @@ struct PollContext {
         return r;
     }
 };
+
+void PollAllDevices(PollContext& ctx, HANDLE stopEvent = nullptr);
 
 // G-Wolves model names (shared by the Glorious- and Kysona-protocol drivers).
 const wchar_t* GWolvesModelName(USHORT pid);

@@ -39,4 +39,16 @@ cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /I "src" /Fe"build\device_db_parser_t
 if not "%ERRORLEVEL%"=="0" exit /b 13
 "build\device_db_parser_test.exe"
 if not "%ERRORLEVEL%"=="0" exit /b 14
+cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /W4 /DNOMINMAX /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /I "src" /Fe"build\battery_lifecycle_test.exe" tests\battery_lifecycle_test.cpp
+if not "%ERRORLEVEL%"=="0" exit /b 15
+"build\battery_lifecycle_test.exe"
+if not "%ERRORLEVEL%"=="0" exit /b 16
+cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /W4 /DNOMINMAX /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /I "src" /Fe"build\logitech_driver_test.exe" tests\logitech_driver_test.cpp src\drivers\logitech.cpp src\drivers\logitech_cache.cpp
+if not "%ERRORLEVEL%"=="0" exit /b 17
+"build\logitech_driver_test.exe"
+if not "%ERRORLEVEL%"=="0" exit /b 18
+cl /nologo /std:c++17 /utf-8 /EHsc /MT /O2 /W4 /DNOMINMAX /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /I "src" /Fe"build\ghub_match_test.exe" tests\ghub_match_test.cpp /link winhttp.lib
+if not "%ERRORLEVEL%"=="0" exit /b 19
+"build\ghub_match_test.exe"
+if not "%ERRORLEVEL%"=="0" exit /b 20
 echo ALL_TESTS_PASSED

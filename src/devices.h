@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <cstdint>
 
 enum class DeviceKind { Other, Mouse, Headset, Keyboard, Gamepad };
 
@@ -14,6 +15,10 @@ struct DeviceStatus {
     // All low-level sources combined into this logical device, for
     // receiver health monitoring without losing transport-specific IDs.
     std::vector<std::wstring> sourceKeys;
+    std::wstring connectionId; // actual USB/BT instance, never just VID/PID/model
+    bool receiverBacked = false;
+    bool ghub = false;         // eligible for read-only localhost status refreshes
+    std::uint64_t lastLiveMs = 0; // monotonic acquisition time; zero means no live sample
     std::wstring via;          // "2.4 GHz receiver", "Bluetooth", "USB cable", ...
     DeviceKind kind = DeviceKind::Other;
     int  percent    = -1;      // 0..100, or -1 when unknown right now
@@ -22,13 +27,23 @@ struct DeviceStatus {
     bool estimated = false;   // numeric value is converted from a controller-reported raw level
     bool charging   = false;
     bool asleep     = false;   // receiver answered but the device is sleeping (keep last value)
-    bool connected  = true;    // false: receiver present, device switched off (hidden)
+    bool connected  = true;    // false: confirmed disconnect; radio sleep uses asleep
     int  millivolts = 0;       // battery voltage when reported (0 = unknown)
-    int  graceSec   = 0;       // keep showing the last value this long if the device stops answering
+    int  graceSec   = 0;       // legacy driver grace; receiverBacked uses the central 90s TTL
 };
 
 // Queries every supported device. Blocking (can take a second or two); call from a worker thread.
 std::vector<DeviceStatus> PollAllDevices();
+
+// Worker -> UI snapshot. Partial snapshots only replace the listed connections.
+struct DevicePoll {
+    std::vector<DeviceStatus> devices;
+    std::vector<std::wstring> presentConnections;
+    std::vector<std::wstring> polledConnections;
+    bool complete = true;
+    bool inventoryComplete = true;
+    unsigned generation = 0;
+};
 
 // Prints every HID collection (for adding support for new devices).
 std::wstring DumpHidCollections();
