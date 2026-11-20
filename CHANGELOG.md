@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.13
+
+- Fixed late Bluetooth peripheral detection when the app started while the headset was disconnected: a newly connected Mi Earphones 2 Pro can now produce an indicator without restarting DrayBattery or selecting Refresh now. Only the actual connected Bluetooth peripheral is accepted; paired-only devices are not shown.
+- Displayed connected headset battery properties from Windows normally while the value is available. Stale/uncertain values remain dimmed, clearly attributed to Windows rather than falsely presented as new device measurements. Timestamp and reconnect handling prevent an old cache from reappearing as a live result.
+- Improved Razer Wolverine V3 Pro Windows Mode (1532:0A4C) discovery when USB/XInput arrives before the HID battery endpoint is ready. Retry battery-only queries on the verified receiver after 3, 8, 16 and 30 seconds; stop after a valid response or confirmed USB removal. Ignore the virtual XInput child, never substitute XInput FULL/WIRED for a measured battery percentage.
+- Added read-only device diagnostics, state counters, battery display lifecycle events, and stronger exception/slow-poll logging. This improves future crash diagnosis; the cause of the previously reported exit is **not yet established**.
+- Verified real Mi Bluetooth reconnect at a Windows-reported 100% and real Wolverine USB removal/reconnection, with a 26% HID battery reading after automatic recovery. Sleep/retention of G903 was also observed.
+- All 14 MSVC regression suites pass; the Windows staging build and taskbar widget smoke checks pass.
+- Known limitations: Xbox Mode automatic battery acquisition was not verified; the taskbar context-menu positioning issue is not fixed in this release.
+
 ## 0.1.12
 
 - **Presence-based sleep indicators for all supported physical devices:** keep the last trustworthy battery value dimmed without an age limit while the exact wireless receiver is present or the Bluetooth peripheral itself reports connected. Fresh vendor samples return to normal brightness. A paired device alone is not a connected device.
